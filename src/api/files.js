@@ -598,73 +598,195 @@ export async function handleListSharedFiles(request, env, params) {
 export async function handleFileAction(request, bucket) {
     try {
         const body = await request.json();
-        const { action, sourceKeys, destinationPrefix } = body;
+        const { action, sourceKeys, sourceDirectories, destinationPrefix } = body;
 
         if (!['move', 'copy'].includes(action)) {
             return new Response(JSON.stringify({ success: false, message: "Invalid action" }), { status: 400 });
-        }
-        if (!Array.isArray(sourceKeys) || sourceKeys.length === 0) {
-            return new Response(JSON.stringify({ success: false, message: "No source files specified" }), { status: 400 });
         }
         if (typeof destinationPrefix !== 'string') {
             return new Response(JSON.stringify({ success: false, message: "Invalid destination" }), { status: 400 });
         }
 
-        const ACTION_CONCURRENCY = 4;
-        const results = new Array(sourceKeys.length);
+        const ACTION_CONCURRENCY = 8;
+        const destinationParentPrefix = destinationPrefix === '/'
+            ? ''
+            : (destinationPrefix.endsWith('/') ? destinationPrefix : `${destinationPrefix}/`);
+        const sourceItems = Array.isArray(body.sourceItems)
+            ? body.sourceItems
+            : [
+                ...(Array.isArray(sourceKeys) ? sourceKeys.map(key => ({ type: 'file', key })) : []),
+                ...(Array.isArray(sourceDirectories) ? sourceDirectories.map(path => ({ type: 'directory', path })) : [])
+            ];
+        const actionTasks = [];
+        const skippedResults = [];
+
+        if (sourceItems.length === 0) {
+            return new Response(JSON.stringify({ success: false, message: "No source items specified" }), { status: 400 });
+        }
+
+        function normalizeDirectoryPath(path) {
+            if (typeof path !== 'string' || !path || path === '/') return '';
+            return path.endsWith('/') ? path : `${path}/`;
+        }
+
+        function getDirectoryName(path) {
+            const normalizedPath = normalizeDirectoryPath(path);
+            return normalizedPath.replace(/\/$/, '').split('/').pop() || '';
+        }
+
+        async function addDirectoryTasks(sourcePath) {
+            const sourcePrefix = normalizeDirectoryPath(sourcePath);
+            if (!sourcePrefix) {
+                return { source: sourcePath, status: 'error', error: 'Invalid directory path' };
+            }
+
+            if (destinationParentPrefix === sourcePrefix || destinationParentPrefix.startsWith(sourcePrefix)) {
+                return { source: sourcePrefix, status: 'error', error: 'Cannot move or copy a folder into itself' };
+            }
+
+            const folderName = getDirectoryName(sourcePrefix);
+            const destinationFolderPrefix = `${destinationParentPrefix}${folderName}/`;
+            if (destinationFolderPrefix === sourcePrefix) {
+                return { source: sourcePrefix, destination: destinationFolderPrefix, status: 'success', skipped: true };
+            }
+
+            let cursor = undefined;
+            let foundObjects = 0;
+            while (true) {
+                const listResult = await bucket.list({
+                    prefix: sourcePrefix,
+                    cursor,
+                    limit: 1000
+                });
+
+                for (const object of listResult.objects || []) {
+                    foundObjects += 1;
+                    actionTasks.push({
+                        source: object.key,
+                        destination: `${destinationFolderPrefix}${object.key.substring(sourcePrefix.length)}`,
+                        sourceDirectory: sourcePrefix
+                    });
+                }
+
+                if (!listResult.truncated) break;
+                cursor = listResult.cursor;
+            }
+
+            if (foundObjects === 0) {
+                actionTasks.push({
+                    source: sourcePrefix,
+                    destination: destinationFolderPrefix,
+                    sourceDirectory: sourcePrefix,
+                    createDirectoryMarker: true
+                });
+            }
+
+            return null;
+        }
+
+        for (const item of sourceItems) {
+            const normalizedItem = typeof item === 'string' ? { type: 'file', key: item } : item;
+
+            if (normalizedItem.type === 'file') {
+                if (!normalizedItem.key || typeof normalizedItem.key !== 'string') {
+                    return new Response(JSON.stringify({ success: false, message: "Invalid source file" }), { status: 400 });
+                }
+
+                const fileName = normalizedItem.key.split('/').pop();
+                const destinationKey = `${destinationParentPrefix}${fileName}`;
+                if (destinationKey === normalizedItem.key) {
+                    skippedResults.push({
+                        source: normalizedItem.key,
+                        destination: destinationKey,
+                        status: 'success',
+                        skipped: true
+                    });
+                } else {
+                    actionTasks.push({
+                        source: normalizedItem.key,
+                        destination: destinationKey
+                    });
+                }
+                continue;
+            }
+
+            if (normalizedItem.type === 'directory') {
+                const directoryResult = await addDirectoryTasks(normalizedItem.path);
+                if (directoryResult?.status === 'error') {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: directoryResult.error,
+                        results: [directoryResult]
+                    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (directoryResult?.skipped) skippedResults.push(directoryResult);
+                continue;
+            }
+
+            return new Response(JSON.stringify({ success: false, message: "Invalid source item type" }), { status: 400 });
+        }
+
+        const results = new Array(actionTasks.length);
         let nextIndex = 0;
 
-        const performAction = async (sourceKey) => {
-            if (typeof sourceKey !== 'string' || !sourceKey) {
-                return { source: sourceKey, status: 'error', error: 'Invalid source key' };
+        const performAction = async (task) => {
+            if (!task.source || !task.destination) {
+                return { source: task.source, status: 'error', error: 'Invalid source item' };
             }
 
-            const fileName = sourceKey.split('/').pop();
-            let destKey = (destinationPrefix.endsWith('/') ? destinationPrefix : destinationPrefix + '/') + fileName;
-            if (destinationPrefix === '/') {
-                destKey = fileName;
-            }
-
-            if (destKey === sourceKey) {
-                return { source: sourceKey, destination: destKey, status: 'success', skipped: true };
+            if (task.destination === task.source) {
+                return { source: task.source, destination: task.destination, status: 'success', skipped: true };
             }
 
             try {
-                const object = await bucket.get(sourceKey);
-                if (object === null) {
-                    return { source: sourceKey, status: 'error', error: 'Source not found' };
+                if (task.createDirectoryMarker) {
+                    await bucket.put(task.destination, new Uint8Array(0), {
+                        httpMetadata: { contentType: 'application/x-directory' }
+                    });
+                    return { source: task.source, destination: task.destination, status: 'success' };
                 }
 
-                await bucket.put(destKey, object.body, {
+                const object = await bucket.get(task.source);
+                if (object === null) {
+                    return { source: task.source, status: 'error', error: 'Source not found' };
+                }
+
+                await bucket.put(task.destination, object.body, {
                     httpMetadata: object.httpMetadata,
                     customMetadata: object.customMetadata,
                 });
 
                 if (action === 'move') {
-                    await bucket.delete(sourceKey);
+                    await bucket.delete(task.source);
                 }
-                return { source: sourceKey, destination: destKey, status: 'success' };
+                return {
+                    source: task.source,
+                    destination: task.destination,
+                    sourceDirectory: task.sourceDirectory,
+                    status: 'success'
+                };
             } catch (e) {
-                return { source: sourceKey, status: 'error', error: e.message };
+                return { source: task.source, status: 'error', error: e.message };
             }
         };
 
-        const workers = Array.from({ length: Math.min(ACTION_CONCURRENCY, sourceKeys.length) }, async () => {
-            while (nextIndex < sourceKeys.length) {
+        const workers = Array.from({ length: Math.min(ACTION_CONCURRENCY, Math.max(actionTasks.length, 1)) }, async () => {
+            while (nextIndex < actionTasks.length) {
                 const currentIndex = nextIndex++;
-                results[currentIndex] = await performAction(sourceKeys[currentIndex]);
+                results[currentIndex] = await performAction(actionTasks[currentIndex]);
             }
         });
 
         await Promise.all(workers);
 
-        const successCount = results.filter(r => r.status === 'success').length;
+        const allResults = [...skippedResults, ...results.filter(Boolean)];
+        const successCount = allResults.filter(r => r.status === 'success').length;
         const actionText = action === 'move' ? '移动' : '复制';
 
         return new Response(JSON.stringify({
             success: true,
-            message: `成功${actionText} ${successCount} 个文件`,
-            results,
+            message: `成功${actionText} ${successCount} 个项目`,
+            results: allResults,
         }), { headers: { 'Content-Type': 'application/json' } });
 
     } catch (error) {

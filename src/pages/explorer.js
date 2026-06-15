@@ -339,7 +339,7 @@ export function serveExplorerPage() {
 	            transform: scale(.985);
 	            box-shadow: 0 .5rem 1.2rem rgba(15, 23, 42, .12)!important;
 	        }
-	        .gallery.is-dragging-file .item[data-item-type="directory"] .card {
+	        .gallery.is-dragging-item .item[data-item-type="directory"] .card {
 	            border-style: dashed;
 	        }
 	        .gallery .item.drop-target .card {
@@ -353,6 +353,42 @@ export function serveExplorerPage() {
 	        }
 	        .gallery .item.drop-target .file-type-icon {
 	            transform: scale(1.08);
+	        }
+	        .gallery .item.drop-target-invalid .card {
+	            border-color: var(--bs-danger);
+	            box-shadow: 0 0 0 .18rem rgba(220, 53, 69, .14)!important;
+	        }
+	        .gallery .item.drop-target-invalid .directory-shell {
+	            background: linear-gradient(135deg, #fff0f0 0%, #ffe1e1 100%);
+	            color: var(--bs-danger);
+	        }
+	        .gallery .item.is-moving .card {
+	            pointer-events: none;
+	            border-color: var(--bs-primary);
+	            box-shadow: 0 0 0 .18rem rgba(13, 110, 253, .14)!important;
+	        }
+	        .gallery .item.is-moving .card::after {
+	            content: "";
+	            position: absolute;
+	            inset: 0;
+	            background: rgba(255, 255, 255, .58);
+	        }
+	        .gallery .item.is-moving .card::before {
+	            content: "";
+	            position: absolute;
+	            top: 50%;
+	            left: 50%;
+	            z-index: 12;
+	            width: 2rem;
+	            height: 2rem;
+	            margin: -1rem 0 0 -1rem;
+	            border: .22rem solid rgba(13, 110, 253, .22);
+	            border-top-color: var(--bs-primary);
+	            border-radius: 50%;
+	            animation: pixr2-spin 680ms linear infinite;
+	        }
+	        @keyframes pixr2-spin {
+	            to { transform: rotate(360deg); }
 	        }
 	        @media (max-width: 575.98px) {
 	            .gallery {
@@ -447,6 +483,27 @@ export function serveExplorerPage() {
 	        }
 	        .page-drop-overlay__panel .bi {
 	            font-size: 2.75rem;
+	        }
+	        .item-context-menu {
+	            position: fixed;
+	            z-index: 1300;
+	            display: none;
+	            min-width: 9.5rem;
+	            padding: .35rem;
+	            border: 1px solid rgba(15, 23, 42, .12);
+	            border-radius: .5rem;
+	            background: rgba(255, 255, 255, .98);
+	            box-shadow: 0 .85rem 2rem rgba(15, 23, 42, .16);
+	        }
+	        .item-context-menu.show {
+	            display: block;
+	            animation: pixr2-fade-up var(--pixr2-fast) var(--pixr2-ease) both;
+	        }
+	        .item-context-menu .dropdown-item {
+	            display: flex;
+	            align-items: center;
+	            border-radius: .35rem;
+	            gap: .55rem;
 	        }
         .image-preview-overlay {
             position: fixed;
@@ -754,6 +811,13 @@ export function serveExplorerPage() {
         </div>
     </div>
 
+    <div id="itemContextMenu" class="item-context-menu" role="menu" aria-hidden="true">
+        <button id="contextDeleteBtn" class="dropdown-item text-danger" type="button" role="menuitem">
+            <i class="bi bi-trash"></i>
+            <span>删除</span>
+        </button>
+    </div>
+
     <div class="toast-container position-fixed top-0 end-0 p-3">
         <div id="notification" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
             <div class="toast-header">
@@ -791,8 +855,8 @@ export function serveExplorerPage() {
 		            const galleryCache = new Map();
 		            let hasRenderedGallery = false;
 		            let galleryRequestId = 0;
-		            const DRAG_FILE_KEYS_TYPE = 'application/x-pixr2-file-keys';
-		            let draggedFileKeys = [];
+		            const DRAG_ITEMS_TYPE = 'application/x-pixr2-items';
+		            let draggedItems = [];
 		            let dragSourceItem = null;
 		            let activeDropTarget = null;
 		            let dragMoveInProgress = false;
@@ -845,6 +909,8 @@ export function serveExplorerPage() {
             const uploadCurrentPath = document.getElementById('uploadCurrentPath');
             const pageDropOverlay = document.getElementById('pageDropOverlay');
             const pageDropPath = document.getElementById('pageDropPath');
+            const itemContextMenu = document.getElementById('itemContextMenu');
+            const contextDeleteBtn = document.getElementById('contextDeleteBtn');
 
             let currentAction = ''; // 'move' or 'copy'
             let gallerySelectedFiles = [];
@@ -855,6 +921,7 @@ export function serveExplorerPage() {
             let directoryTreeCache = null;
             let directoryChildrenByParent = new Map();
             let isMoveCopyBusy = false;
+            let contextTargetItem = null;
             const MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
             const MULTIPART_CONCURRENCY = 4;
             const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -1000,6 +1067,7 @@ export function serveExplorerPage() {
 		                    if (item.isDir) {
 		                        col.dataset.itemType = 'directory';
 		                        col.dataset.path = item.path;
+		                        col.draggable = true;
 		                        col.innerHTML = \`
 		                            <div class="card h-100 position-relative" data-path="\${safePath}">
 		                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
@@ -1185,24 +1253,31 @@ export function serveExplorerPage() {
                 return selection.type === 'directory' ? \`directory:\${selection.path}\` : \`file:\${selection.key}\`;
             }
 
-            function getSelectedFileKeys() {
-                return selectedItems.filter(item => item.type === 'file').map(item => item.key);
+            function isSelectionInList(selection, list = selectedItems) {
+                const selectionId = getSelectionId(selection);
+                return list.some(item => getSelectionId(item) === selectionId);
             }
 
-            function hasSelectedDirectory() {
-                return selectedItems.some(item => item.type === 'directory');
+            function clearSelection() {
+                selectedItems = [];
+                galleryEl.querySelectorAll('.item.selected').forEach(item => {
+                    item.classList.remove('selected');
+                    const checkbox = item.querySelector('.item-checkbox');
+                    if (checkbox) checkbox.checked = false;
+                });
+                updateControls();
             }
 
             function getDataTransferTypes(event) {
                 return Array.from(event.dataTransfer?.types || []).map(type => String(type).toLowerCase());
             }
 
-            function isExplorerFileDrag(event) {
-                return getDataTransferTypes(event).includes(DRAG_FILE_KEYS_TYPE);
+            function isExplorerItemDrag(event) {
+                return getDataTransferTypes(event).includes(DRAG_ITEMS_TYPE);
             }
 
             function hasExternalFileDrag(event) {
-                return getDataTransferTypes(event).includes('files') && !isExplorerFileDrag(event);
+                return getDataTransferTypes(event).includes('files') && !isExplorerItemDrag(event);
             }
 
             function closestElement(target, selector) {
@@ -1214,23 +1289,22 @@ export function serveExplorerPage() {
                 return item && galleryEl.contains(item) ? item : null;
             }
 
-            function setDirectoryDropTarget(item) {
-                if (activeDropTarget === item) return;
-                if (activeDropTarget) activeDropTarget.classList.remove('drop-target');
+            function setDirectoryDropTarget(item, { invalid = false } = {}) {
+                if (activeDropTarget) activeDropTarget.classList.remove('drop-target', 'drop-target-invalid');
                 activeDropTarget = item;
-                if (activeDropTarget) activeDropTarget.classList.add('drop-target');
+                if (activeDropTarget) activeDropTarget.classList.add(invalid ? 'drop-target-invalid' : 'drop-target');
             }
 
             function clearDirectoryDropTarget() {
-                if (activeDropTarget) activeDropTarget.classList.remove('drop-target');
+                if (activeDropTarget) activeDropTarget.classList.remove('drop-target', 'drop-target-invalid');
                 activeDropTarget = null;
             }
 
             function clearExplorerDragState() {
                 if (dragSourceItem) dragSourceItem.classList.remove('dragging');
                 dragSourceItem = null;
-                draggedFileKeys = [];
-                galleryEl.classList.remove('is-dragging-file');
+                draggedItems = [];
+                galleryEl.classList.remove('is-dragging-item');
                 clearDirectoryDropTarget();
             }
 
@@ -1241,34 +1315,73 @@ export function serveExplorerPage() {
                 }, 0);
             }
 
-            function getDragFileKeysFromEvent(event) {
-                if (draggedFileKeys.length > 0) return draggedFileKeys.slice();
+            function normalizeDirectoryPath(path = '') {
+                return path && path.endsWith('/') ? path : \`\${path}/\`;
+            }
+
+            function getNormalizedDragItems(items) {
+                const itemMap = new Map();
+                items.forEach(item => {
+                    if (item?.type === 'file' && item.key) {
+                        itemMap.set(\`file:\${item.key}\`, { type: 'file', key: item.key });
+                    } else if (item?.type === 'directory' && item.path) {
+                        itemMap.set(\`directory:\${item.path}\`, { type: 'directory', path: item.path });
+                    }
+                });
+                return Array.from(itemMap.values());
+            }
+
+            function getDragItemsFromElement(itemEl) {
+                const selection = getSelectionFromElement(itemEl);
+                const isSelected = isSelectionInList(selection);
+                return getNormalizedDragItems(isSelected ? selectedItems : [selection]);
+            }
+
+            function getDragItemsFromEvent(event) {
+                if (draggedItems.length > 0) return draggedItems.slice();
                 try {
-                    const rawValue = event.dataTransfer?.getData(DRAG_FILE_KEYS_TYPE) || '[]';
-                    const keys = JSON.parse(rawValue);
-                    return Array.isArray(keys) ? keys.filter(key => typeof key === 'string' && key) : [];
+                    const rawValue = event.dataTransfer?.getData(DRAG_ITEMS_TYPE) || '[]';
+                    const items = JSON.parse(rawValue);
+                    return Array.isArray(items) ? getNormalizedDragItems(items) : [];
                 } catch {
                     return [];
                 }
             }
 
-            async function moveDraggedFilesToDirectory(targetItem, sourceKeys) {
+            function isInvalidDirectoryDrop(targetPath, sourceItems) {
+                const targetDirectory = normalizeDirectoryPath(targetPath);
+                return sourceItems.some(item => {
+                    if (item.type !== 'directory') return false;
+                    const sourceDirectory = normalizeDirectoryPath(item.path);
+                    return targetDirectory === sourceDirectory || targetDirectory.startsWith(sourceDirectory);
+                });
+            }
+
+            async function moveDraggedItemsToDirectory(targetItem, sourceItems) {
                 const destinationPrefix = targetItem?.dataset.path;
-                const uniqueKeys = [...new Set(sourceKeys.filter(Boolean))];
-                if (!destinationPrefix || uniqueKeys.length === 0 || dragMoveInProgress) return;
+                const normalizedItems = getNormalizedDragItems(sourceItems);
+                if (!destinationPrefix || normalizedItems.length === 0 || dragMoveInProgress) return;
+
+                if (isInvalidDirectoryDrop(destinationPrefix, normalizedItems)) {
+                    showNotification('不能把文件夹移动到自身或子文件夹中', 'danger');
+                    return;
+                }
 
                 dragMoveInProgress = true;
-                targetItem.classList.add('drop-target');
+                const movingLabel = normalizedItems.length === 1 ? '1 个项目' : \`\${normalizedItems.length} 个项目\`;
+                targetItem.classList.add('drop-target', 'is-moving');
+                showNotification(\`正在移动 \${movingLabel}...\`, 'primary');
                 const result = await apiCall('/api/files/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'move',
-                        sourceKeys: uniqueKeys,
+                        sourceItems: normalizedItems,
                         destinationPrefix
                     })
                 }, false);
                 dragMoveInProgress = false;
+                targetItem.classList.remove('is-moving');
 
                 if (result.success) {
                     showNotification(result.message || '移动完成', 'success');
@@ -1356,30 +1469,29 @@ export function serveExplorerPage() {
             });
 
             galleryEl.addEventListener('dragstart', event => {
-                const itemEl = closestElement(event.target, '.item[data-item-type="file"]');
+                const itemEl = closestElement(event.target, '.item[data-item-type]');
                 if (!itemEl || !event.dataTransfer || closestElement(event.target, '.item-checkbox, .copy-direct-url-btn')) {
                     event.preventDefault();
                     return;
                 }
 
-                const fileKey = itemEl.dataset.key;
-                if (!fileKey) {
+                const dragItems = getDragItemsFromElement(itemEl);
+                if (dragItems.length === 0) {
                     event.preventDefault();
                     return;
                 }
 
-                const selectedFileKeys = getSelectedFileKeys();
-                draggedFileKeys = selectedFileKeys.includes(fileKey) ? selectedFileKeys : [fileKey];
+                draggedItems = dragItems;
                 dragSourceItem = itemEl;
                 dragSourceItem.classList.add('dragging');
-                galleryEl.classList.add('is-dragging-file');
+                galleryEl.classList.add('is-dragging-item');
                 event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData(DRAG_FILE_KEYS_TYPE, JSON.stringify(draggedFileKeys));
-                event.dataTransfer.setData('text/plain', draggedFileKeys.join('\\n'));
+                event.dataTransfer.setData(DRAG_ITEMS_TYPE, JSON.stringify(draggedItems));
+                event.dataTransfer.setData('text/plain', draggedItems.map(item => item.key || item.path).join('\\n'));
             });
 
             galleryEl.addEventListener('dragover', event => {
-                if (!isExplorerFileDrag(event) && draggedFileKeys.length === 0) return;
+                if (!isExplorerItemDrag(event) && draggedItems.length === 0) return;
 
                 const targetItem = getDirectoryDropTarget(event.target);
                 if (!targetItem) {
@@ -1387,9 +1499,11 @@ export function serveExplorerPage() {
                     return;
                 }
 
+                const sourceItems = getDragItemsFromEvent(event);
+                const invalidDrop = isInvalidDirectoryDrop(targetItem.dataset.path, sourceItems);
                 event.preventDefault();
-                event.dataTransfer.dropEffect = 'move';
-                setDirectoryDropTarget(targetItem);
+                event.dataTransfer.dropEffect = invalidDrop ? 'none' : 'move';
+                setDirectoryDropTarget(targetItem, { invalid: invalidDrop });
             });
 
             galleryEl.addEventListener('dragleave', event => {
@@ -1400,16 +1514,16 @@ export function serveExplorerPage() {
 
             galleryEl.addEventListener('drop', async event => {
                 if (hasExternalFileDrag(event)) return;
-                if (!isExplorerFileDrag(event) && draggedFileKeys.length === 0) return;
+                if (!isExplorerItemDrag(event) && draggedItems.length === 0) return;
 
                 event.preventDefault();
                 event.stopPropagation();
                 suppressImmediateGalleryClick();
 
                 const targetItem = getDirectoryDropTarget(event.target);
-                const sourceKeys = getDragFileKeysFromEvent(event);
-                if (targetItem && sourceKeys.length > 0) {
-                    await moveDraggedFilesToDirectory(targetItem, sourceKeys);
+                const sourceItems = getDragItemsFromEvent(event);
+                if (targetItem && sourceItems.length > 0) {
+                    await moveDraggedItemsToDirectory(targetItem, sourceItems);
                 }
                 clearExplorerDragState();
             });
@@ -1455,7 +1569,7 @@ export function serveExplorerPage() {
                 const numItems = galleryEl.querySelectorAll('.item[data-item-type]').length;
                 const hasSelection = selectedItems.length > 0;
                 deleteBtn.disabled = !hasSelection;
-                document.getElementById('actionsDropdown').disabled = !hasSelection || hasSelectedDirectory() || getSelectedFileKeys().length === 0;
+                document.getElementById('actionsDropdown').disabled = !hasSelection;
                 selectAllCheckbox.checked = numItems > 0 && selectedItems.length === numItems;
                 selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < numItems;
             }
@@ -1922,22 +2036,85 @@ export function serveExplorerPage() {
                 }
             });
 
-            deleteBtn.addEventListener('click', async () => {
-                const deleteMessage = hasSelectedDirectory()
-                    ? \`确定要删除选中的 \${selectedItems.length} 个项目吗？文件夹内所有内容都会被删除。\`
-                    : \`确定要删除选中的 \${selectedItems.length} 个项目吗？\`;
-                if (selectedItems.length === 0 || !confirm(deleteMessage)) return;
+            function getDeleteConfirmMessage(items) {
+                const hasDirectory = items.some(item => item.type === 'directory');
+                return hasDirectory
+                    ? \`确定要删除选中的 \${items.length} 个项目吗？文件夹内所有内容都会被删除。\`
+                    : \`确定要删除选中的 \${items.length} 个项目吗？\`;
+            }
+
+            async function deleteItems(items) {
+                if (items.length === 0 || !confirm(getDeleteConfirmMessage(items))) return;
                 const result = await apiCall('/api/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ items: selectedItems })
+                    body: JSON.stringify({ items })
                 });
                 if (result.success) {
                     showNotification('删除成功', 'success');
+                    selectedItems = [];
                     directoryTreeCache = null;
                     refreshGallery();
                 }
+            }
+
+            function hideItemContextMenu() {
+                contextTargetItem = null;
+                itemContextMenu.classList.remove('show');
+                itemContextMenu.setAttribute('aria-hidden', 'true');
+            }
+
+            function showItemContextMenu(event, itemEl) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const selection = getSelectionFromElement(itemEl);
+                if (!isSelectionInList(selection)) {
+                    clearSelection();
+                    toggleSelection(itemEl, true);
+                }
+
+                contextTargetItem = itemEl;
+                itemContextMenu.classList.add('show');
+                itemContextMenu.setAttribute('aria-hidden', 'false');
+
+                const menuRect = itemContextMenu.getBoundingClientRect();
+                const left = Math.min(event.clientX, window.innerWidth - menuRect.width - 8);
+                const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
+                itemContextMenu.style.left = Math.max(8, left) + 'px';
+                itemContextMenu.style.top = Math.max(8, top) + 'px';
+            }
+
+            deleteBtn.addEventListener('click', async () => {
+                await deleteItems(selectedItems.slice());
             });
+
+            galleryEl.addEventListener('contextmenu', event => {
+                const itemEl = closestElement(event.target, '.item[data-item-type]');
+                if (!itemEl) {
+                    hideItemContextMenu();
+                    return;
+                }
+                showItemContextMenu(event, itemEl);
+            });
+
+            contextDeleteBtn.addEventListener('click', async () => {
+                const items = selectedItems.length > 0
+                    ? selectedItems.slice()
+                    : (contextTargetItem ? [getSelectionFromElement(contextTargetItem)] : []);
+                hideItemContextMenu();
+                await deleteItems(items);
+            });
+
+            document.addEventListener('click', event => {
+                if (!itemContextMenu.contains(event.target)) hideItemContextMenu();
+            });
+
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape') hideItemContextMenu();
+            });
+            window.addEventListener('scroll', hideItemContextMenu, true);
+            window.addEventListener('resize', hideItemContextMenu);
 
             document.getElementById('shareFolderBtn').addEventListener('click', async () => {
                 const result = await apiCall('/api/share/create', {
@@ -2008,10 +2185,6 @@ export function serveExplorerPage() {
             let selectedDestination = null;
 
             function setupMoveCopy(action) {
-                if (hasSelectedDirectory()) {
-                    showNotification('文件夹暂不支持移动或复制，请只选择文件', 'danger');
-                    return;
-                }
                 currentAction = action;
                 confirmMoveCopyBtn.textContent = action === 'move' ? '移动到此处' : '复制到此处';
                 selectedDestination = null;
@@ -2180,8 +2353,8 @@ export function serveExplorerPage() {
             document.getElementById('copyBtn').addEventListener('click', () => setupMoveCopy('copy'));
 
             confirmMoveCopyBtn.addEventListener('click', async () => {
-                const sourceKeys = getSelectedFileKeys();
-                if (sourceKeys.length === 0 || selectedDestination === null || isMoveCopyBusy) return;
+                const sourceItems = getNormalizedDragItems(selectedItems);
+                if (sourceItems.length === 0 || selectedDestination === null || isMoveCopyBusy) return;
 
                 const originalHtml = confirmMoveCopyBtn.innerHTML;
                 const actionText = currentAction === 'move' ? '移动' : '复制';
@@ -2196,7 +2369,7 @@ export function serveExplorerPage() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: currentAction,
-                        sourceKeys,
+                        sourceItems,
                         destinationPrefix: selectedDestination
                     })
                 }, false);
@@ -2256,7 +2429,7 @@ export function serveExplorerPage() {
             function showNotification(message, type = 'success') {
                 const toastBody = document.querySelector('#notification .toast-body');
                 const toastEl = document.getElementById('notification');
-                toastEl.classList.remove('bg-success', 'bg-danger');
+                toastEl.classList.remove('bg-success', 'bg-danger', 'bg-primary', 'bg-info', 'bg-warning', 'text-dark', 'text-white');
                 toastEl.classList.add(\`bg-\${type}\`, 'text-white');
                 toastBody.textContent = message;
                 notificationToast.show();
