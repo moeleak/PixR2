@@ -1,3 +1,10 @@
+const R2_PUBLIC_BASE_URL = 'https://box.leak.moe';
+const IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
+function buildObjectUrl(baseUrl, key) {
+    return `${baseUrl.replace(/\/$/, '')}/${key.split('/').map(encodeURIComponent).join('/')}`;
+}
+
 // 简易路由器类
 class Router {
     constructor() {
@@ -135,39 +142,6 @@ export default {
                 return new Response('Not found', { status: 404 });
             }
             return handleListSharedFiles(req, env, params);
-        });
-
-        // R2 资源代理路由
-        router.get('/bkt/:key+', async (req, env, params) => {
-            const key = decodeURIComponent(params.key);
-            if (!key) {
-                return new Response('Not found', { status: 404 });
-            }
-
-            const cache = caches.default;
-            const cacheKey = new Request(new URL(req.url).toString(), req);
-            const cachedResponse = await cache.match(cacheKey);
-
-            if (cachedResponse) {
-                return cachedResponse;
-            }
-
-            const object = await env.BUCKET_R2.get(key);
-            if (object === null) {
-                return new Response('Object Not Found', { status: 404 });
-            }
-
-            const headers = new Headers();
-            object.writeHttpMetadata(headers);
-            headers.set('Cache-Control', 'public, max-age=14400, immutable');
-            headers.set('etag', object.httpEtag);
-
-            const response = new Response(object.body, { headers });
-
-            // 将响应存入缓存
-            await cache.put(cacheKey, response.clone());
-
-            return response;
         });
 
         // 需要身份验证的网页界面路由
@@ -380,7 +354,7 @@ async function handleTelegramWebhook(request, env) {
                 const uploadResult = await uploadImageToR2(fileUrl, env.BUCKET_R2, isDocument, userPath);
 
                 if (uploadResult.ok) {
-                    const imageUrl = `${new URL(request.url).origin}/bkt/${uploadResult.key}`;
+                    const imageUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, uploadResult.key);
                     const messageText = `直链:\n<code>${imageUrl}</code>\nMarkdown:\n<code>![img](${imageUrl})</code>`;
                     await sendMessage(chatId, messageText, `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`, {
                         parse_mode: "HTML",
@@ -739,7 +713,7 @@ function serveUploadPage() {
         <header>
             <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
                 <div class="container">
-                    <a class="navbar-brand fw-bold" href="/">PixR2</a>
+                    <a class="navbar-brand fw-bold" href="/upload">PixR2</a>
                     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                         <span class="navbar-toggler-icon"></span>
                     </button>
@@ -985,10 +959,26 @@ function serveGalleryPage() {
             width: 100%;
             aspect-ratio: 1 / 1;
             object-fit: cover;
-            background-color: #f8f9fa;
+            background:
+                linear-gradient(90deg, rgba(226, 232, 240, 0.85), rgba(248, 249, 250, 0.96), rgba(226, 232, 240, 0.85));
+            background-size: 200% 100%;
+            animation: pixr2-image-shimmer 1.1s ease-in-out infinite;
+            opacity: .55;
+            transform: scale(1.015);
             transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
                 filter var(--pixr2-normal) var(--pixr2-ease),
                 transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .file-image.loaded {
+            animation: none;
+            background: #f8f9fa;
+            opacity: 1;
+            transform: scale(1);
+        }
+        @keyframes pixr2-image-shimmer {
+            from { background-position: 200% 0; }
+            to { background-position: -200% 0; }
         }
         .gallery .item .card:hover .file-image {
             filter: saturate(1.04);
@@ -1029,7 +1019,8 @@ function serveGalleryPage() {
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.85);
+            background-color: rgba(248, 249, 250, 0.78);
+            backdrop-filter: blur(16px);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -1052,6 +1043,8 @@ function serveGalleryPage() {
             max-height: 90vh;
             object-fit: contain;
             cursor: default;
+            border-radius: .5rem;
+            box-shadow: 0 1.25rem 3rem rgba(15, 23, 42, 0.28);
             opacity: 0;
             transform: scale(0.96);
             transition:
@@ -1062,13 +1055,35 @@ function serveGalleryPage() {
             opacity: 1;
             transform: scale(1);
         }
+        .image-preview-overlay.is-loading .preview-content {
+            opacity: 0;
+            transform: scale(0.98);
+        }
+        .preview-loader {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            transform: scale(0.96);
+            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
+            pointer-events: none;
+        }
+        .image-preview-overlay.is-loading .preview-loader {
+            opacity: 1;
+            transform: scale(1);
+        }
         .loading-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
+            background-color: rgba(248, 249, 250, 0.62);
+            backdrop-filter: blur(8px);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -1110,7 +1125,7 @@ function serveGalleryPage() {
     <header>
       <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
         <div class="container">
-          <a class="navbar-brand fw-bold" href="/">PixR2</a>
+          <a class="navbar-brand fw-bold" href="/upload">PixR2</a>
   
           <!-- 移动端折叠按钮 -->
           <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarButtons" aria-controls="navbarButtons" aria-expanded="false" aria-label="切换导航">
@@ -1279,9 +1294,10 @@ function serveGalleryPage() {
     </div>
 
     <div id="imagePreview" class="image-preview-overlay">
-        <button id="previewCloseBtn" class="btn-close btn-close-white position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
-        <button id="previewPrevBtn" class="btn btn-outline-light position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
-        <button id="previewNextBtn" class="btn btn-outline-light position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
+        <div class="preview-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
+        <button id="previewCloseBtn" class="btn-close position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
+        <button id="previewPrevBtn" class="btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
+        <button id="previewNextBtn" class="btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
         <img class="preview-content" id="previewImage">
     </div>
 
@@ -1296,6 +1312,8 @@ function serveGalleryPage() {
             let currentImageList = [];
             let currentImageIndex = -1;
             let previewCloseTimer = null;
+            let previewRequestId = 0;
+            const imageCache = new Map();
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -1389,13 +1407,12 @@ function serveGalleryPage() {
                 currentImageList = files
                     .filter(file => file.name !== '.null')
                     .map(file => file.url);
-                const hasFiles = files.length > 0;
-                selectAllContainer.style.display = hasFiles ? 'flex' : 'none';
 
                 const items = [
                     ...directories.map(dir => ({...dir, isDir: true})),
                     ...files.map(file => ({...file, isFile: true}))
                 ];
+                selectAllContainer.style.display = items.length > 0 ? 'flex' : 'none';
 
                 if (items.length === 0) {
                     galleryEl.innerHTML = '<div class="col"><p class="text-muted">当前文件夹为空</p></div>';
@@ -1406,8 +1423,11 @@ function serveGalleryPage() {
                     const col = document.createElement('div');
                     col.className = 'col item';
                     if (item.isDir) {
+                        col.dataset.itemType = 'directory';
+                        col.dataset.path = item.path;
                         col.innerHTML = \`
-                            <div class="card text-center h-100" data-path="\${item.path}">
+                            <div class="card text-center h-100 position-relative" data-path="\${item.path}">
+                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
                                 <div class="card-body d-flex flex-column justify-content-center align-items-center">
                                     <i class="bi bi-folder-fill directory-icon"></i>
                                     <p class="card-text text-truncate mt-2" title="\${item.name}">\${item.name}</p>
@@ -1416,12 +1436,13 @@ function serveGalleryPage() {
                         \`;
                     } else { // isFile
                        col.dataset.key = item.key;
+                       col.dataset.itemType = 'file';
                        col.innerHTML = \`
                            <div class="card h-100 position-relative">
-                               <input type="checkbox" class="form-check-input checkbox position-absolute top-0 end-0 m-2">
+                               <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
                                \${item.name === '.null' 
                                    ? '<div class="card-body text-center d-flex flex-column justify-content-center align-items-center"><i class="bi bi-file-earmark-binary fs-1"></i></div>'
-                                   : \`<img data-src="\${item.url}" class="card-img-top file-image w-100 h-100 object-fit-cover lazyload" alt="\${item.name}" loading="lazy">\`
+                                  : \`<img data-src="\${item.url}" class="card-img-top file-image w-100 h-100 object-fit-cover lazyload" alt="\${item.name}" loading="lazy">\`
                                }
                                <div class="card-footer text-body-secondary small">
                                    <div class="d-flex justify-content-between align-items-center">
@@ -1429,7 +1450,12 @@ function serveGalleryPage() {
                                            <p class="card-text text-truncate mb-0" title="\${item.name}">\${item.name}</p>
                                            <p class="card-text mb-0"><small>\${formatFileSize(item.size)}</small></p>
                                        </div>
-                                       \${item.name !== '.null' ? \`<button class="btn btn-sm btn-outline-secondary preview-btn flex-shrink-0" data-url="\${item.url}"><i class="bi bi-eye"></i></button>\` : ''}
+                                       \${item.name !== '.null' ? \`
+                                           <div class="btn-group flex-shrink-0">
+                                               <button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${item.url}" title="预览"><i class="bi bi-eye"></i></button>
+                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${item.directUrl || item.url}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
+                                           </div>
+                                       \` : ''}
                                    </div>
                                </div>
                            </div>
@@ -1446,8 +1472,7 @@ function serveGalleryPage() {
                    entries.forEach(entry => {
                        if (entry.isIntersecting) {
                            const image = entry.target;
-                           image.src = image.dataset.src;
-                           image.classList.remove('lazyload');
+                           loadGalleryImage(image);
                            observer.unobserve(image);
                        }
                    });
@@ -1458,9 +1483,122 @@ function serveGalleryPage() {
                });
            }
 
+            function preloadImage(url) {
+                if (!url) return Promise.resolve();
+                if (imageCache.has(url)) return imageCache.get(url);
+
+                const promise = new Promise(resolve => {
+                    const image = new Image();
+                    image.decoding = 'async';
+                    image.onload = () => resolve(url);
+                    image.onerror = () => resolve(url);
+                    image.src = url;
+                });
+                imageCache.set(url, promise);
+                return promise;
+            }
+
+            function loadGalleryImage(image) {
+                const src = image.dataset.src;
+                preloadImage(src).then(() => {
+                    image.src = src;
+                    image.classList.remove('lazyload');
+                    requestAnimationFrame(() => image.classList.add('loaded'));
+                });
+            }
+
+            function preloadAdjacentImages() {
+                [currentImageIndex - 1, currentImageIndex + 1].forEach(index => {
+                    if (index >= 0 && index < currentImageList.length) {
+                        preloadImage(currentImageList[index]);
+                    }
+                });
+            }
+
+            function writeToClipboard(text) {
+                if (navigator.clipboard && window.isSecureContext) {
+                    return navigator.clipboard.writeText(text);
+                }
+
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                const copied = document.execCommand('copy');
+                textarea.remove();
+                return copied ? Promise.resolve() : Promise.reject(new Error('Copy failed'));
+            }
+
+            function copyDirectUrl(button) {
+                const url = button.dataset.url;
+                if (!url) return;
+                const originalHtml = button.innerHTML;
+                const originalClassName = button.className;
+                writeToClipboard(url).then(() => {
+                    button.className = 'btn btn-sm btn-success copy-direct-url-btn';
+                    button.innerHTML = '<i class="bi bi-check2"></i>';
+                    showNotification('图片直链已复制', 'success');
+                    setTimeout(() => {
+                        button.className = originalClassName;
+                        button.innerHTML = originalHtml;
+                    }, 1200);
+                }).catch(() => showNotification('复制失败，请手动复制', 'danger'));
+            }
+
+            function getSelectionFromElement(itemEl) {
+                if (itemEl.dataset.itemType === 'directory') {
+                    return { type: 'directory', path: itemEl.dataset.path };
+                }
+                return { type: 'file', key: itemEl.dataset.key };
+            }
+
+            function getSelectionId(selection) {
+                return selection.type === 'directory' ? \`directory:\${selection.path}\` : \`file:\${selection.key}\`;
+            }
+
+            function getSelectedFileKeys() {
+                return selectedItems.filter(item => item.type === 'file').map(item => item.key);
+            }
+
+            function hasSelectedDirectory() {
+                return selectedItems.some(item => item.type === 'directory');
+            }
+
+            function toggleSelection(itemEl, checked = null) {
+                const selection = getSelectionFromElement(itemEl);
+                if (!selection.key && !selection.path) return;
+
+                const selectionId = getSelectionId(selection);
+                const index = selectedItems.findIndex(item => getSelectionId(item) === selectionId);
+                const shouldSelect = checked === null ? index === -1 : checked;
+                const checkbox = itemEl.querySelector('.item-checkbox');
+
+                if (shouldSelect && index === -1) {
+                    selectedItems.push(selection);
+                    itemEl.classList.add('selected');
+                    if (checkbox) checkbox.checked = true;
+                } else if (!shouldSelect && index > -1) {
+                    selectedItems.splice(index, 1);
+                    itemEl.classList.remove('selected');
+                    if (checkbox) checkbox.checked = false;
+                } else if (checkbox) {
+                    checkbox.checked = shouldSelect;
+                }
+                updateControls();
+            }
+
             galleryEl.addEventListener('click', e => {
                 const itemEl = e.target.closest('.item');
                 if (!itemEl) return;
+
+                const checkbox = e.target.closest('.item-checkbox');
+                if (checkbox) {
+                    e.stopPropagation();
+                    toggleSelection(itemEl, checkbox.checked);
+                    return;
+                }
 
                 const dirCard = itemEl.querySelector('.card[data-path]');
                 if (dirCard) {
@@ -1469,8 +1607,15 @@ function serveGalleryPage() {
                     loadGallery();
                     return;
                 }
-                
+
                 if (itemEl.dataset.key) {
+                    const copyBtn = e.target.closest('.copy-direct-url-btn');
+                    if (copyBtn) {
+                        e.stopPropagation();
+                        copyDirectUrl(copyBtn);
+                        return;
+                    }
+
                     const previewBtn = e.target.closest('.preview-btn');
                     if (previewBtn) {
                         e.stopPropagation(); // 防止触发选中
@@ -1484,19 +1629,7 @@ function serveGalleryPage() {
                                                e.target.closest('.card-footer');
 
                     if (isSelectableTarget) {
-                        const key = itemEl.dataset.key;
-                        const checkbox = itemEl.querySelector('.checkbox');
-                        const index = selectedItems.indexOf(key);
-                        if (index > -1) {
-                            selectedItems.splice(index, 1);
-                            itemEl.classList.remove('selected');
-                            checkbox.checked = false;
-                        } else {
-                            selectedItems.push(key);
-                            itemEl.classList.add('selected');
-                            checkbox.checked = true;
-                        }
-                        updateControls();
+                        toggleSelection(itemEl);
                     }
                 }
             });
@@ -1534,21 +1667,21 @@ function serveGalleryPage() {
             });
 
             function updateControls() {
-                const numFiles = galleryEl.querySelectorAll('.item[data-key]').length;
+                const numItems = galleryEl.querySelectorAll('.item[data-item-type]').length;
                 const hasSelection = selectedItems.length > 0;
                 deleteBtn.disabled = !hasSelection;
-                document.getElementById('actionsDropdown').disabled = !hasSelection;
-                selectAllCheckbox.checked = numFiles > 0 && selectedItems.length === numFiles;
-                selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < numFiles;
+                document.getElementById('actionsDropdown').disabled = !hasSelection || hasSelectedDirectory() || getSelectedFileKeys().length === 0;
+                selectAllCheckbox.checked = numItems > 0 && selectedItems.length === numItems;
+                selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < numItems;
             }
 
             selectAllCheckbox.addEventListener('change', () => {
-                const fileItems = galleryEl.querySelectorAll('.item[data-key]');
+                const selectableItems = galleryEl.querySelectorAll('.item[data-item-type]');
                 selectedItems = [];
-                fileItems.forEach(item => {
-                    const checkbox = item.querySelector('.checkbox');
+                selectableItems.forEach(item => {
+                    const checkbox = item.querySelector('.item-checkbox');
                     if (selectAllCheckbox.checked) {
-                        selectedItems.push(item.dataset.key);
+                        selectedItems.push(getSelectionFromElement(item));
                         item.classList.add('selected');
                         checkbox.checked = true;
                     } else {
@@ -1578,11 +1711,14 @@ function serveGalleryPage() {
             });
 
             deleteBtn.addEventListener('click', async () => {
-                if (selectedItems.length === 0 || !confirm(\`确定要删除选中的 \${selectedItems.length} 个项目吗？\`)) return;
+                const deleteMessage = hasSelectedDirectory()
+                    ? \`确定要删除选中的 \${selectedItems.length} 个项目吗？文件夹内所有内容都会被删除。\`
+                    : \`确定要删除选中的 \${selectedItems.length} 个项目吗？\`;
+                if (selectedItems.length === 0 || !confirm(deleteMessage)) return;
                 const result = await apiCall('/api/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keys: selectedItems })
+                    body: JSON.stringify({ items: selectedItems })
                 });
                 if (result.success) {
                     showNotification('删除成功', 'success');
@@ -1659,6 +1795,10 @@ function serveGalleryPage() {
             let selectedDestination = null;
 
             function setupMoveCopy(action) {
+                if (hasSelectedDirectory()) {
+                    showNotification('文件夹暂不支持移动或复制，请只选择文件', 'danger');
+                    return;
+                }
                 currentAction = action;
                 const confirmBtn = document.getElementById('confirmMoveCopyBtn');
                 confirmBtn.textContent = action === 'move' ? '移动到此处' : '复制到此处';
@@ -1772,14 +1912,15 @@ function serveGalleryPage() {
             document.getElementById('copyBtn').addEventListener('click', () => setupMoveCopy('copy'));
 
             document.getElementById('confirmMoveCopyBtn').addEventListener('click', async () => {
-                if (selectedItems.length === 0 || selectedDestination === null) return;
+                const sourceKeys = getSelectedFileKeys();
+                if (sourceKeys.length === 0 || selectedDestination === null) return;
 
                 const result = await apiCall('/api/files/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: currentAction,
-                        sourceKeys: selectedItems,
+                        sourceKeys,
                         destinationPrefix: selectedDestination
                     })
                 });
@@ -1856,13 +1997,24 @@ function serveGalleryPage() {
                 if (currentImageIndex === -1) return;
 
                 clearTimeout(previewCloseTimer);
-                previewImage.src = imageUrl;
-                imagePreview.classList.add('show');
+                showPreviewImage(imageUrl);
+            }
+
+            function showPreviewImage(imageUrl) {
+                const requestId = ++previewRequestId;
+                imagePreview.classList.add('show', 'is-loading');
                 updateNavButtons();
+                preloadAdjacentImages();
+                preloadImage(imageUrl).then(() => {
+                    if (requestId !== previewRequestId || currentImageIndex === -1) return;
+                    previewImage.src = imageUrl;
+                    requestAnimationFrame(() => imagePreview.classList.remove('is-loading'));
+                });
             }
 
             function closePreview() {
-                imagePreview.classList.remove('show');
+                previewRequestId++;
+                imagePreview.classList.remove('show', 'is-loading');
                 clearTimeout(previewCloseTimer);
                 previewCloseTimer = setTimeout(() => {
                     if (!imagePreview.classList.contains('show')) {
@@ -1886,16 +2038,14 @@ function serveGalleryPage() {
             function showPrevImage() {
                 if (currentImageIndex > 0) {
                     currentImageIndex--;
-                    previewImage.src = currentImageList[currentImageIndex];
-                    updateNavButtons();
+                    showPreviewImage(currentImageList[currentImageIndex]);
                 }
             }
 
             function showNextImage() {
                 if (currentImageIndex < currentImageList.length - 1) {
                     currentImageIndex++;
-                    previewImage.src = currentImageList[currentImageIndex];
-                    updateNavButtons();
+                    showPreviewImage(currentImageList[currentImageIndex]);
                 }
             }
 
@@ -1958,10 +2108,26 @@ function serveSharePage(shareId) {
             width: 100%;
             aspect-ratio: 1 / 1;
             object-fit: cover;
-            background-color: #f8f9fa;
+            background:
+                linear-gradient(90deg, rgba(226, 232, 240, 0.85), rgba(248, 249, 250, 0.96), rgba(226, 232, 240, 0.85));
+            background-size: 200% 100%;
+            animation: pixr2-image-shimmer 1.1s ease-in-out infinite;
+            opacity: .55;
+            transform: scale(1.015);
             transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
                 filter var(--pixr2-normal) var(--pixr2-ease),
                 transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .file-image.loaded {
+            animation: none;
+            background: #f8f9fa;
+            opacity: 1;
+            transform: scale(1);
+        }
+        @keyframes pixr2-image-shimmer {
+            from { background-position: 200% 0; }
+            to { background-position: -200% 0; }
         }
         .gallery .item .card:hover .file-image {
             filter: saturate(1.04);
@@ -1981,7 +2147,8 @@ function serveSharePage(shareId) {
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.85);
+            background-color: rgba(248, 249, 250, 0.78);
+            backdrop-filter: blur(16px);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -2004,6 +2171,8 @@ function serveSharePage(shareId) {
             max-height: 90vh;
             object-fit: contain;
             cursor: default;
+            border-radius: .5rem;
+            box-shadow: 0 1.25rem 3rem rgba(15, 23, 42, 0.28);
             opacity: 0;
             transform: scale(0.96);
             transition:
@@ -2014,13 +2183,35 @@ function serveSharePage(shareId) {
             opacity: 1;
             transform: scale(1);
         }
+        .image-preview-overlay.is-loading .preview-content {
+            opacity: 0;
+            transform: scale(0.98);
+        }
+        .preview-loader {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            transform: scale(0.96);
+            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
+            pointer-events: none;
+        }
+        .image-preview-overlay.is-loading .preview-loader {
+            opacity: 1;
+            transform: scale(1);
+        }
         .loading-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
+            background-color: rgba(248, 249, 250, 0.62);
+            backdrop-filter: blur(8px);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -2062,7 +2253,7 @@ function serveSharePage(shareId) {
     <header>
         <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
             <div class="container">
-                <a class="navbar-brand fw-bold" href="/">PixR2</a>
+                <a class="navbar-brand fw-bold" href="/upload">PixR2</a>
             </div>
         </nav>
     </header>
@@ -2086,9 +2277,10 @@ function serveSharePage(shareId) {
     </div>
     
     <div id="imagePreview" class="image-preview-overlay">
-        <button id="previewCloseBtn" class="btn-close btn-close-white position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
-        <button id="previewPrevBtn" class="btn btn-outline-light position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
-        <button id="previewNextBtn" class="btn btn-outline-light position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
+        <div class="preview-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
+        <button id="previewCloseBtn" class="btn-close position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
+        <button id="previewPrevBtn" class="btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
+        <button id="previewNextBtn" class="btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
         <img class="preview-content" id="previewImage">
     </div>
 
@@ -2104,6 +2296,8 @@ function serveSharePage(shareId) {
             let currentImageList = [];
             let currentImageIndex = -1;
             let previewCloseTimer = null;
+            let previewRequestId = 0;
+            const imageCache = new Map();
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -2205,7 +2399,12 @@ function serveSharePage(shareId) {
                                            <p class="card-text text-truncate mb-0" title="\${item.name}">\${item.name}</p>
                                            <p class="card-text mb-0"><small>\${formatFileSize(item.size)}</small></p>
                                        </div>
-                                       \${item.name !== '.null' ? \`<button class="btn btn-sm btn-outline-secondary preview-btn flex-shrink-0" data-url="\${item.url}"><i class="bi bi-eye"></i></button>\` : ''}
+                                       \${item.name !== '.null' ? \`
+                                           <div class="btn-group flex-shrink-0">
+                                               <button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${item.url}" title="预览"><i class="bi bi-eye"></i></button>
+                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${item.directUrl || item.url}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
+                                           </div>
+                                       \` : ''}
                                    </div>
                                </div>
                            </div>
@@ -2222,8 +2421,7 @@ function serveSharePage(shareId) {
                    entries.forEach(entry => {
                        if (entry.isIntersecting) {
                            const image = entry.target;
-                           image.src = image.dataset.src;
-                           image.classList.remove('lazyload');
+                           loadGalleryImage(image);
                            observer.unobserve(image);
                        }
                    });
@@ -2233,6 +2431,76 @@ function serveSharePage(shareId) {
                    imageObserver.observe(image);
                });
            }
+
+            function preloadImage(url) {
+                if (!url) return Promise.resolve();
+                if (imageCache.has(url)) return imageCache.get(url);
+
+                const promise = new Promise(resolve => {
+                    const image = new Image();
+                    image.decoding = 'async';
+                    image.onload = () => resolve(url);
+                    image.onerror = () => resolve(url);
+                    image.src = url;
+                });
+                imageCache.set(url, promise);
+                return promise;
+            }
+
+            function loadGalleryImage(image) {
+                const src = image.dataset.src;
+                preloadImage(src).then(() => {
+                    image.src = src;
+                    image.classList.remove('lazyload');
+                    requestAnimationFrame(() => image.classList.add('loaded'));
+                });
+            }
+
+            function preloadAdjacentImages() {
+                [currentImageIndex - 1, currentImageIndex + 1].forEach(index => {
+                    if (index >= 0 && index < currentImageList.length) {
+                        preloadImage(currentImageList[index]);
+                    }
+                });
+            }
+
+            function writeToClipboard(text) {
+                if (navigator.clipboard && window.isSecureContext) {
+                    return navigator.clipboard.writeText(text);
+                }
+
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                const copied = document.execCommand('copy');
+                textarea.remove();
+                return copied ? Promise.resolve() : Promise.reject(new Error('Copy failed'));
+            }
+
+            function copyDirectUrl(button) {
+                const url = button.dataset.url;
+                if (!url) return;
+                const originalHtml = button.innerHTML;
+                const originalClassName = button.className;
+                writeToClipboard(url).then(() => {
+                    button.className = 'btn btn-sm btn-success copy-direct-url-btn';
+                    button.innerHTML = '<i class="bi bi-check2"></i>';
+                    setTimeout(() => {
+                        button.className = originalClassName;
+                        button.innerHTML = originalHtml;
+                    }, 1200);
+                }).catch(() => {
+                    button.className = 'btn btn-sm btn-danger copy-direct-url-btn';
+                    button.innerHTML = '<i class="bi bi-x"></i>';
+                    setTimeout(() => {
+                        button.className = originalClassName;
+                        button.innerHTML = originalHtml;
+                    }, 1200);
+                });
+            }
 
             function renderPagination({ totalPages }) {
                 paginationEl.innerHTML = '';
@@ -2268,6 +2536,12 @@ function serveSharePage(shareId) {
                     currentPage = 1;
                     loadGallery();
                 } else { // File click
+                    const copyBtn = e.target.closest('.copy-direct-url-btn');
+                    if (copyBtn) {
+                        copyDirectUrl(copyBtn);
+                        return;
+                    }
+
                     const previewBtn = e.target.closest('.preview-btn');
                     if (previewBtn) {
                         openPreview(previewBtn.dataset.url);
@@ -2308,13 +2582,24 @@ function serveSharePage(shareId) {
                 if (currentImageIndex === -1) return;
 
                 clearTimeout(previewCloseTimer);
-                previewImage.src = imageUrl;
-                imagePreview.classList.add('show');
+                showPreviewImage(imageUrl);
+            }
+
+            function showPreviewImage(imageUrl) {
+                const requestId = ++previewRequestId;
+                imagePreview.classList.add('show', 'is-loading');
                 updateNavButtons();
+                preloadAdjacentImages();
+                preloadImage(imageUrl).then(() => {
+                    if (requestId !== previewRequestId || currentImageIndex === -1) return;
+                    previewImage.src = imageUrl;
+                    requestAnimationFrame(() => imagePreview.classList.remove('is-loading'));
+                });
             }
 
             function closePreview() {
-                imagePreview.classList.remove('show');
+                previewRequestId++;
+                imagePreview.classList.remove('show', 'is-loading');
                 clearTimeout(previewCloseTimer);
                 previewCloseTimer = setTimeout(() => {
                     if (!imagePreview.classList.contains('show')) {
@@ -2338,16 +2623,14 @@ function serveSharePage(shareId) {
             function showPrevImage() {
                 if (currentImageIndex > 0) {
                     currentImageIndex--;
-                    previewImage.src = currentImageList[currentImageIndex];
-                    updateNavButtons();
+                    showPreviewImage(currentImageList[currentImageIndex]);
                 }
             }
 
             function showNextImage() {
                 if (currentImageIndex < currentImageList.length - 1) {
                     currentImageIndex++;
-                    previewImage.src = currentImageList[currentImageIndex];
-                    updateNavButtons();
+                    showPreviewImage(currentImageList[currentImageIndex]);
                 }
             }
 
@@ -2448,12 +2731,12 @@ async function handleWebUpload(request, bucket) {
         // 上传到R2
         await bucket.put(key, fileBuffer, {
             httpMetadata: {
-                contentType: detectedType.mime
+                contentType: detectedType.mime,
+                cacheControl: IMAGE_CACHE_CONTROL
             }
         });
 
-        // 生成响应URL，使用新的R2代理路由
-        const imageUrl = `${new URL(request.url).origin}/bkt/${key}`;
+        const imageUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
 
         return new Response(JSON.stringify({
             success: true,
@@ -2496,24 +2779,90 @@ async function handleListFiles(request, bucket) {
 async function handleDeleteFiles(request, bucket) {
     try {
         const body = await request.json();
-        const keys = body.keys;
-        if (!keys || !Array.isArray(keys) || keys.length === 0) {
+        const items = Array.isArray(body.items)
+            ? body.items
+            : (Array.isArray(body.keys) ? body.keys.map(key => ({ type: 'file', key })) : []);
+
+        if (items.length === 0) {
             return new Response(JSON.stringify({
                 success: false,
-                message: "No valid keys provided for deletion"
+                message: "No valid items provided for deletion"
             }), {
                 status: 400,
                 headers: { 'Content-Type': 'application/json' }
             });
         }
-        // 并行删除所有指定的文件
-        const deletePromises = keys.map(key => bucket.delete(key));
-        await Promise.all(deletePromises);
+
+        const keysToDelete = new Set();
+        for (const item of items) {
+            const normalizedItem = typeof item === 'string' ? { type: 'file', key: item } : item;
+
+            if (normalizedItem.type === 'file') {
+                if (!normalizedItem.key || typeof normalizedItem.key !== 'string') {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: "Invalid file key"
+                    }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                keysToDelete.add(normalizedItem.key);
+                continue;
+            }
+
+            if (normalizedItem.type === 'directory') {
+                if (!normalizedItem.path || typeof normalizedItem.path !== 'string' || normalizedItem.path === '/') {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: "Invalid directory path"
+                    }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                const prefix = normalizedItem.path.endsWith('/') ? normalizedItem.path : `${normalizedItem.path}/`;
+                let cursor = undefined;
+                while (true) {
+                    const listResult = await bucket.list({
+                        prefix,
+                        cursor,
+                        limit: 1000
+                    });
+
+                    for (const object of listResult.objects || []) {
+                        keysToDelete.add(object.key);
+                    }
+
+                    if (!listResult.truncated) break;
+                    cursor = listResult.cursor;
+                }
+
+                keysToDelete.add(prefix);
+                keysToDelete.add(`${prefix}.null`);
+                continue;
+            }
+
+            return new Response(JSON.stringify({
+                success: false,
+                message: "Invalid deletion item type"
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const deletedKeys = Array.from(keysToDelete);
+        for (let i = 0; i < deletedKeys.length; i += 100) {
+            const batch = deletedKeys.slice(i, i + 100);
+            await Promise.all(batch.map(key => bucket.delete(key)));
+        }
 
         return new Response(JSON.stringify({
             success: true,
-            message: `Successfully deleted ${keys.length} file(s)`,
-            deletedKeys: keys
+            message: `Successfully deleted ${items.length} item(s)`,
+            deletedCount: deletedKeys.length
         }), {
             headers: { 'Content-Type': 'application/json' }
         });
@@ -2853,7 +3202,8 @@ async function uploadImageToR2(imageUrl, bucket, isDocument = false, userPath = 
 
         await bucket.put(key, buffer, {
             httpMetadata: {
-                contentType: detectedType.mime
+                contentType: detectedType.mime,
+                cacheControl: IMAGE_CACHE_CONTROL
             },
         });
 
@@ -2972,13 +3322,15 @@ async function listR2Files(request, bucket, forcePrefix = null) {
             const name = object.key.substring(prefix.length);
             if (!name) return null;
             if (name === '.null' || object.key.endsWith('/')) return null;
+            const objectUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, object.key);
             return {
                 name,
                 key: object.key,
                 size: object.size,
                 uploaded: object.uploaded,
                 type: 'file',
-                url: `${new URL(request.url).origin}/bkt/${object.key.split('/').map(encodeURIComponent).join('/')}`
+                url: objectUrl,
+                directUrl: objectUrl
             };
         }).filter(Boolean);
 
