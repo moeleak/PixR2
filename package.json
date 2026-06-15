@@ -1,0 +1,15 @@
+{
+  "name": "pixr2",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir .wrangler/tmp-build",
+    "check": "wrangler deploy --dry-run --outdir .wrangler/tmp-build",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.100.0"
+  }
+}

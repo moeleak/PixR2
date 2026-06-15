@@ -55,7 +55,7 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 - 选择你的 PixR2 仓库并创建 Worker
 - Worker 名称填写 `pixr2`，或同步修改 [wrangler.toml](wrangler.toml) 里的 `name`
 - 项目入口已经写在 [wrangler.toml](wrangler.toml) 中：`main = "src/index.js"`
-- 如果 Cloudflare 让你填写构建设置，项目根目录保持 `/`，Build command 留空，Deploy command 保持默认 `npx wrangler deploy`
+- 如果 Cloudflare 让你填写构建设置，项目根目录保持 `/`，Build command 填写 `npm run build`，Deploy command 填写 `npm run deploy`
 - Worker 创建完成后，进入项目设置，点击 **绑定** -> **添加绑定**
   - 选择 **R2 存储桶**，变量名填写 `BUCKET_R2`，选择之前创建的 R2 存储桶  
   - 再次添加绑定，选择 **KV 命名空间**，变量名填写 `SHARES_KV`，选择之前创建的 KV  
