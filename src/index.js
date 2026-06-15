@@ -1,5 +1,4 @@
-import { handleLogin } from './auth.js';
-import { requireAuth } from './auth.js';
+import { handleLogin, isAuthenticated, requireAuth } from './auth.js';
 import { Router } from './router.js';
 import {
     handleAbortR2MultipartUpload,
@@ -19,10 +18,9 @@ import {
 } from './api/files.js';
 import { handleTelegramWebhook, setWebhook } from './api/telegram.js';
 import { serveErrorPage } from './pages/error.js';
-import { serveGalleryPage } from './pages/gallery.js';
+import { serveExplorerPage } from './pages/explorer.js';
 import { serveLoginPage } from './pages/login.js';
 import { serveSharePage } from './pages/share.js';
-import { serveUploadPage } from './pages/upload.js';
 
 // Cloudflare Workers 的主入口点
 export default {
@@ -57,10 +55,17 @@ export default {
 
         // --- 路由器设置 ---
         const router = new Router();
+        const redirectToExplorer = (req) => Response.redirect(new URL('/explorer', req.url).toString(), 302);
+        const serveHomePage = async (req) => {
+            if (await isAuthenticated(req, env.SECRET_KEY)) {
+                return redirectToExplorer(req);
+            }
+            return serveLoginPage();
+        };
 
         // 网页界面路由
-        router.get('/', () => serveLoginPage());
-        router.get('/index.html', () => serveLoginPage());
+        router.get('/', serveHomePage);
+        router.get('/index.html', serveHomePage);
         router.post('/login', (req) => handleLogin(req, env.SECRET_KEY));
 
         // 公共分享路由
@@ -78,8 +83,7 @@ export default {
         });
 
         // 需要身份验证的网页界面路由
-        router.get('/upload', requireAuth(serveUploadPage));
-        router.get('/gallery', requireAuth(serveGalleryPage));
+        router.get('/explorer', requireAuth(serveExplorerPage));
 
         // 需要身份验证的API路由
         router.post('/api/upload', requireAuth((req, env) => handleWebUpload(req, env.BUCKET_R2)));

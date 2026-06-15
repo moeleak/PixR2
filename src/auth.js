@@ -8,7 +8,7 @@ import { serveLoginPage } from './pages/login.js';
  * @param {string} secretKey - 用于验证的密钥
  * @returns {Promise<boolean>} - 如果已认证则返回true，否则返回false
  */
-async function isAuthenticated(request, secretKey) {
+export async function isAuthenticated(request, secretKey) {
     const cookies = parseCookies(request.headers.get('Cookie') || '');
     // 比较cookie中的auth值与密钥的哈希值
     return cookies.auth === hashKey(secretKey).replace(/=/g, '');
@@ -18,7 +18,7 @@ async function isAuthenticated(request, secretKey) {
  * 处理登录请求
  * @param {Request} request - 传入的请求
  * @param {string} secretKey - 用于验证的密钥
- * @returns {Promise<Response>} - 成功则重定向到上传页面，失败则返回登录页面并显示错误信息
+ * @returns {Promise<Response>} - 成功则重定向到文件管理页面，失败则返回登录页面并显示错误信息
  */
 export async function handleLogin(request, secretKey) {
     const formData = await request.formData();
@@ -29,8 +29,8 @@ export async function handleLogin(request, secretKey) {
         const headers = new Headers();
         // 登录成功，设置一个有效期为一天的HttpOnly cookie
         headers.append('Set-Cookie', `auth=${hashKey(secretKey).replace(/=/g, '')}; SameSite=Lax; Secure; HttpOnly; Path=/; Max-Age=86400`);
-        // 重定向到上传页面
-        headers.append('Location', '/upload');
+        // 重定向到文件管理页面
+        headers.append('Location', '/explorer');
         return new Response(null, {
             status: 302,
             headers

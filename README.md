@@ -79,7 +79,8 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 - [src/index.js](src/index.js)：Worker 主入口与路由注册
 - [src/api/files.js](src/api/files.js)：文件上传、分片上传、目录、分享和文件操作 API
 - [src/api/telegram.js](src/api/telegram.js)：Telegram Bot Webhook 与消息处理
-- [src/pages](src/pages)：登录、上传、文件管理和分享页面
+- [src/pages/explorer.js](src/pages/explorer.js)：文件管理页面
+- [src/pages](src/pages)：登录和分享页面
 - [src/utils/files.js](src/utils/files.js)：文件名、类型、R2 列表和直链工具函数
 
 

@@ -1,17 +1,17 @@
 import { getMotionStyles } from './motion.js';
 
 /**
- * 提供图库页面的HTML
- * @returns {Response} - 包含图库页面HTML的响应
+ * 提供文件管理页面的HTML
+ * @returns {Response} - 包含文件管理页面HTML的响应
  */
-export function serveGalleryPage() {
+export function serveExplorerPage() {
     const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PixR2 - 图库</title>
+    <title>PixR2 - 文件管理</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css">
     <style>
@@ -494,7 +494,7 @@ export function serveGalleryPage() {
     <header>
       <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
         <div class="container">
-          <a class="navbar-brand fw-bold" href="/upload">PixR2</a>
+          <a class="navbar-brand fw-bold" href="/explorer">PixR2</a>
 
           <!-- 移动端折叠按钮 -->
           <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarButtons" aria-controls="navbarButtons" aria-expanded="false" aria-label="切换导航">

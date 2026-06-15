@@ -381,7 +381,7 @@ export function serveSharePage(shareId) {
     <header>
         <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
             <div class="container">
-                <a class="navbar-brand fw-bold" href="/upload">PixR2</a>
+                <a class="navbar-brand fw-bold" href="/explorer">PixR2</a>
             </div>
         </nav>
     </header>
