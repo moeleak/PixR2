@@ -328,6 +328,32 @@ export function serveExplorerPage() {
 	        .gallery .item.selected .file-card-footer {
 	            background-color: rgba(13, 110, 253, .035);
 	        }
+	        .gallery .item[draggable="true"] .card {
+	            cursor: grab;
+	        }
+	        .gallery .item[draggable="true"] .card:active {
+	            cursor: grabbing;
+	        }
+	        .gallery .item.dragging .card {
+	            opacity: .58;
+	            transform: scale(.985);
+	            box-shadow: 0 .5rem 1.2rem rgba(15, 23, 42, .12)!important;
+	        }
+	        .gallery.is-dragging-file .item[data-item-type="directory"] .card {
+	            border-style: dashed;
+	        }
+	        .gallery .item.drop-target .card {
+	            border-color: var(--bs-primary);
+	            box-shadow: 0 0 0 .18rem rgba(13, 110, 253, .18), 0 1rem 2rem rgba(13, 110, 253, .12)!important;
+	            transform: translateY(-2px);
+	        }
+	        .gallery .item.drop-target .directory-shell {
+	            background: linear-gradient(135deg, #e7f1ff 0%, #d7e7ff 100%);
+	            color: var(--bs-primary);
+	        }
+	        .gallery .item.drop-target .file-type-icon {
+	            transform: scale(1.08);
+	        }
 	        @media (max-width: 575.98px) {
 	            .gallery {
 	                --pixr2-card-media: 7.5rem;
@@ -383,6 +409,44 @@ export function serveExplorerPage() {
 	        #galleryUploadResults .alert,
 	        #galleryUploadResults .card {
 	            animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+	        }
+	        .page-drop-overlay {
+	            position: fixed;
+	            inset: 0;
+	            z-index: 1040;
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            padding: 1.25rem;
+	            background: rgba(248, 249, 250, .72);
+	            opacity: 0;
+	            visibility: hidden;
+	            pointer-events: none;
+	            transition:
+	                opacity var(--pixr2-normal) var(--pixr2-ease),
+	                visibility var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .page-drop-overlay.show {
+	            opacity: 1;
+	            visibility: visible;
+	        }
+	        .page-drop-overlay__panel {
+	            width: min(28rem, 100%);
+	            border: 2px dashed var(--bs-primary);
+	            border-radius: .75rem;
+	            background: rgba(255, 255, 255, .94);
+	            box-shadow: 0 1.25rem 3rem rgba(15, 23, 42, .16);
+	            color: #212529;
+	            padding: 2.5rem 1.5rem;
+	            text-align: center;
+	            transform: translateY(8px) scale(.98);
+	            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .page-drop-overlay.show .page-drop-overlay__panel {
+	            transform: translateY(0) scale(1);
+	        }
+	        .page-drop-overlay__panel .bi {
+	            font-size: 2.75rem;
 	        }
         .image-preview-overlay {
             position: fixed;
@@ -682,6 +746,14 @@ export function serveExplorerPage() {
         </div>
     </div>
 
+    <div id="pageDropOverlay" class="page-drop-overlay" aria-hidden="true">
+        <div class="page-drop-overlay__panel">
+            <i class="bi bi-cloud-arrow-up text-primary"></i>
+            <div class="fw-semibold mt-3">松开上传到当前文件夹</div>
+            <div id="pageDropPath" class="small text-muted font-monospace mt-1">/</div>
+        </div>
+    </div>
+
     <div class="toast-container position-fixed top-0 end-0 p-3">
         <div id="notification" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
             <div class="toast-header">
@@ -719,6 +791,14 @@ export function serveExplorerPage() {
 		            const galleryCache = new Map();
 		            let hasRenderedGallery = false;
 		            let galleryRequestId = 0;
+		            const DRAG_FILE_KEYS_TYPE = 'application/x-pixr2-file-keys';
+		            let draggedFileKeys = [];
+		            let dragSourceItem = null;
+		            let activeDropTarget = null;
+		            let dragMoveInProgress = false;
+		            let suppressGalleryClick = false;
+		            let pageDragDepth = 0;
+		            let galleryAutoUploadTimer = null;
 
             function escapeHtml(value = '') {
                 const htmlEscapes = {
@@ -763,9 +843,12 @@ export function serveExplorerPage() {
             const galleryRandomName = document.getElementById('galleryRandomName');
             const galleryUploadResults = document.getElementById('galleryUploadResults');
             const uploadCurrentPath = document.getElementById('uploadCurrentPath');
+            const pageDropOverlay = document.getElementById('pageDropOverlay');
+            const pageDropPath = document.getElementById('pageDropPath');
 
             let currentAction = ''; // 'move' or 'copy'
             let gallerySelectedFiles = [];
+            let galleryUploadTargetPath = '';
             let galleryUploadInProgress = false;
             let galleryUploadProgress = [];
             let galleryUploadCompleted = false;
@@ -935,6 +1018,7 @@ export function serveExplorerPage() {
 	                    } else { // isFile
                        col.dataset.key = item.key;
                        col.dataset.itemType = 'file';
+                       if (item.name !== '.null') col.draggable = true;
                        if (item.isImage) col.dataset.previewUrl = item.url;
                        col.innerHTML = \`
                            <div class="card h-100 position-relative">
@@ -945,7 +1029,7 @@ export function serveExplorerPage() {
 		                                   : item.isImage
 		                                       ? \`
 		                                           <div class="file-visual-shell file-image-shell\${imageAlreadyLoaded ? ' loaded' : ''}">
-		                                               <img \${imageAlreadyLoaded ? \`src="\${safeUrl}"\` : \`data-src="\${safeUrl}"\`} class="card-img-top file-image\${imageAlreadyLoaded ? ' loaded' : ' lazyload'}" alt="\${safeName}" loading="\${imageAlreadyLoaded ? 'eager' : 'lazy'}">
+		                                               <img \${imageAlreadyLoaded ? \`src="\${safeUrl}"\` : \`data-src="\${safeUrl}"\`} class="card-img-top file-image\${imageAlreadyLoaded ? ' loaded' : ' lazyload'}" alt="\${safeName}" loading="\${imageAlreadyLoaded ? 'eager' : 'lazy'}" draggable="false">
 		                                               <div class="image-loading-indicator">
 		                                                   <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
 		                                               </div>
@@ -1109,6 +1193,94 @@ export function serveExplorerPage() {
                 return selectedItems.some(item => item.type === 'directory');
             }
 
+            function getDataTransferTypes(event) {
+                return Array.from(event.dataTransfer?.types || []).map(type => String(type).toLowerCase());
+            }
+
+            function isExplorerFileDrag(event) {
+                return getDataTransferTypes(event).includes(DRAG_FILE_KEYS_TYPE);
+            }
+
+            function hasExternalFileDrag(event) {
+                return getDataTransferTypes(event).includes('files') && !isExplorerFileDrag(event);
+            }
+
+            function closestElement(target, selector) {
+                return target instanceof Element ? target.closest(selector) : null;
+            }
+
+            function getDirectoryDropTarget(target) {
+                const item = closestElement(target, '.item[data-item-type="directory"]');
+                return item && galleryEl.contains(item) ? item : null;
+            }
+
+            function setDirectoryDropTarget(item) {
+                if (activeDropTarget === item) return;
+                if (activeDropTarget) activeDropTarget.classList.remove('drop-target');
+                activeDropTarget = item;
+                if (activeDropTarget) activeDropTarget.classList.add('drop-target');
+            }
+
+            function clearDirectoryDropTarget() {
+                if (activeDropTarget) activeDropTarget.classList.remove('drop-target');
+                activeDropTarget = null;
+            }
+
+            function clearExplorerDragState() {
+                if (dragSourceItem) dragSourceItem.classList.remove('dragging');
+                dragSourceItem = null;
+                draggedFileKeys = [];
+                galleryEl.classList.remove('is-dragging-file');
+                clearDirectoryDropTarget();
+            }
+
+            function suppressImmediateGalleryClick() {
+                suppressGalleryClick = true;
+                setTimeout(() => {
+                    suppressGalleryClick = false;
+                }, 0);
+            }
+
+            function getDragFileKeysFromEvent(event) {
+                if (draggedFileKeys.length > 0) return draggedFileKeys.slice();
+                try {
+                    const rawValue = event.dataTransfer?.getData(DRAG_FILE_KEYS_TYPE) || '[]';
+                    const keys = JSON.parse(rawValue);
+                    return Array.isArray(keys) ? keys.filter(key => typeof key === 'string' && key) : [];
+                } catch {
+                    return [];
+                }
+            }
+
+            async function moveDraggedFilesToDirectory(targetItem, sourceKeys) {
+                const destinationPrefix = targetItem?.dataset.path;
+                const uniqueKeys = [...new Set(sourceKeys.filter(Boolean))];
+                if (!destinationPrefix || uniqueKeys.length === 0 || dragMoveInProgress) return;
+
+                dragMoveInProgress = true;
+                targetItem.classList.add('drop-target');
+                const result = await apiCall('/api/files/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'move',
+                        sourceKeys: uniqueKeys,
+                        destinationPrefix
+                    })
+                }, false);
+                dragMoveInProgress = false;
+
+                if (result.success) {
+                    showNotification(result.message || '移动完成', 'success');
+                    selectedItems = [];
+                    directoryTreeCache = null;
+                    refreshGallery();
+                } else {
+                    targetItem.classList.remove('drop-target');
+                    showNotification(result.message || '移动失败', 'danger');
+                }
+            }
+
             function toggleSelection(itemEl, checked = null) {
                 const selection = getSelectionFromElement(itemEl);
                 if (!selection.key && !selection.path) return;
@@ -1133,6 +1305,13 @@ export function serveExplorerPage() {
             }
 
             galleryEl.addEventListener('click', e => {
+                if (suppressGalleryClick) {
+                    suppressGalleryClick = false;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+
                 const itemEl = e.target.closest('.item');
                 if (!itemEl) return;
 
@@ -1174,6 +1353,70 @@ export function serveExplorerPage() {
                         toggleSelection(itemEl);
                     }
                 }
+            });
+
+            galleryEl.addEventListener('dragstart', event => {
+                const itemEl = closestElement(event.target, '.item[data-item-type="file"]');
+                if (!itemEl || !event.dataTransfer || closestElement(event.target, '.item-checkbox, .copy-direct-url-btn')) {
+                    event.preventDefault();
+                    return;
+                }
+
+                const fileKey = itemEl.dataset.key;
+                if (!fileKey) {
+                    event.preventDefault();
+                    return;
+                }
+
+                const selectedFileKeys = getSelectedFileKeys();
+                draggedFileKeys = selectedFileKeys.includes(fileKey) ? selectedFileKeys : [fileKey];
+                dragSourceItem = itemEl;
+                dragSourceItem.classList.add('dragging');
+                galleryEl.classList.add('is-dragging-file');
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData(DRAG_FILE_KEYS_TYPE, JSON.stringify(draggedFileKeys));
+                event.dataTransfer.setData('text/plain', draggedFileKeys.join('\\n'));
+            });
+
+            galleryEl.addEventListener('dragover', event => {
+                if (!isExplorerFileDrag(event) && draggedFileKeys.length === 0) return;
+
+                const targetItem = getDirectoryDropTarget(event.target);
+                if (!targetItem) {
+                    clearDirectoryDropTarget();
+                    return;
+                }
+
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setDirectoryDropTarget(targetItem);
+            });
+
+            galleryEl.addEventListener('dragleave', event => {
+                const targetItem = getDirectoryDropTarget(event.target);
+                if (!targetItem || targetItem.contains(event.relatedTarget)) return;
+                if (activeDropTarget === targetItem) clearDirectoryDropTarget();
+            });
+
+            galleryEl.addEventListener('drop', async event => {
+                if (hasExternalFileDrag(event)) return;
+                if (!isExplorerFileDrag(event) && draggedFileKeys.length === 0) return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                suppressImmediateGalleryClick();
+
+                const targetItem = getDirectoryDropTarget(event.target);
+                const sourceKeys = getDragFileKeysFromEvent(event);
+                if (targetItem && sourceKeys.length > 0) {
+                    await moveDraggedFilesToDirectory(targetItem, sourceKeys);
+                }
+                clearExplorerDragState();
+            });
+
+            galleryEl.addEventListener('dragend', () => {
+                suppressImmediateGalleryClick();
+                clearExplorerDragState();
             });
 
             function renderPagination({ totalPages }) {
@@ -1252,7 +1495,10 @@ export function serveExplorerPage() {
             }
 
             function resetGalleryUpload() {
+                clearTimeout(galleryAutoUploadTimer);
+                galleryAutoUploadTimer = null;
                 gallerySelectedFiles = [];
+                galleryUploadTargetPath = currentPath;
                 galleryUploadProgress = [];
                 galleryUploadInProgress = false;
                 galleryUploadCompleted = false;
@@ -1313,13 +1559,23 @@ export function serveExplorerPage() {
                 });
             }
 
-            function handleGalleryUploadFiles(files) {
+            function handleGalleryUploadFiles(files, { autoStart = false } = {}) {
                 if (galleryUploadInProgress) return;
                 const validFiles = Array.from(files).filter(file => file && file.name);
                 if (validFiles.length === 0) return;
                 galleryUploadResults.innerHTML = '';
                 gallerySelectedFiles = [...gallerySelectedFiles, ...validFiles];
                 updateGalleryUploadPreview();
+
+                if (autoStart) {
+                    clearTimeout(galleryAutoUploadTimer);
+                    galleryAutoUploadTimer = setTimeout(() => {
+                        galleryAutoUploadTimer = null;
+                        if (!galleryUploadInProgress && gallerySelectedFiles.length > 0) {
+                            galleryUploadBtn.click();
+                        }
+                    }, 80);
+                }
             }
 
             function setGalleryUploadProgress(index, state) {
@@ -1395,7 +1651,7 @@ export function serveExplorerPage() {
                     setGalleryUploadProgress(index, { percent: 0, status: '准备上传' });
                     multipartUpload = await postUploadJson('/api/upload/multipart/create', {
                         filename: file.name,
-                        path: currentPath,
+                        path: galleryUploadTargetPath,
                         randomName: galleryRandomName.checked,
                         contentType
                     });
@@ -1538,10 +1794,16 @@ export function serveExplorerPage() {
                 });
             }
 
-            openUploadModalBtn.addEventListener('click', () => {
+            function openUploadModalForPath(path, files = null, { autoStart = false } = {}) {
                 resetGalleryUpload();
-                uploadCurrentPath.textContent = currentPath || '/';
+                galleryUploadTargetPath = path || '';
+                uploadCurrentPath.textContent = galleryUploadTargetPath || '/';
                 uploadModal.show();
+                if (files) handleGalleryUploadFiles(files, { autoStart });
+            }
+
+            openUploadModalBtn.addEventListener('click', () => {
+                openUploadModalForPath(currentPath);
             });
 
             uploadModalEl.addEventListener('hide.bs.modal', event => {
@@ -1562,10 +1824,59 @@ export function serveExplorerPage() {
             galleryDropzone.addEventListener('dragleave', () => galleryDropzone.classList.remove('active'));
             galleryDropzone.addEventListener('drop', event => {
                 event.preventDefault();
+                event.stopPropagation();
                 galleryDropzone.classList.remove('active');
-                handleGalleryUploadFiles(event.dataTransfer.files);
+                handleGalleryUploadFiles(event.dataTransfer.files, { autoStart: true });
             });
             galleryFileInput.addEventListener('change', () => handleGalleryUploadFiles(galleryFileInput.files));
+
+            function setPageDropOverlayVisible(visible) {
+                pageDropPath.textContent = currentPath || '/';
+                pageDropOverlay.classList.toggle('show', visible);
+                pageDropOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+            }
+
+            function resetPageDropOverlay() {
+                pageDragDepth = 0;
+                setPageDropOverlayVisible(false);
+            }
+
+            function hasVisibleModal() {
+                return document.querySelector('.modal.show') !== null;
+            }
+
+            window.addEventListener('dragenter', event => {
+                if (!hasExternalFileDrag(event)) return;
+                event.preventDefault();
+                if (hasVisibleModal()) return;
+
+                pageDragDepth += 1;
+                setPageDropOverlayVisible(true);
+            });
+
+            window.addEventListener('dragover', event => {
+                if (!hasExternalFileDrag(event)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+                if (!hasVisibleModal()) {
+                    setPageDropOverlayVisible(true);
+                }
+            });
+
+            window.addEventListener('dragleave', event => {
+                if (!hasExternalFileDrag(event) || hasVisibleModal()) return;
+                pageDragDepth = Math.max(0, pageDragDepth - 1);
+                if (pageDragDepth === 0) setPageDropOverlayVisible(false);
+            });
+
+            window.addEventListener('drop', event => {
+                if (!hasExternalFileDrag(event)) return;
+                event.preventDefault();
+                resetPageDropOverlay();
+                if (hasVisibleModal()) return;
+
+                openUploadModalForPath(currentPath, event.dataTransfer.files, { autoStart: true });
+            });
 
             galleryUploadBtn.addEventListener('click', async () => {
                 if (gallerySelectedFiles.length === 0 || galleryUploadInProgress) return;
