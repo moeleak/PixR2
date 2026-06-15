@@ -527,6 +527,77 @@ function parseCookies(cookieString) {
 
 // --- 页面渲染函数 ---
 
+function getMotionStyles() {
+    return `
+            :root {
+                --pixr2-ease: cubic-bezier(0.22, 1, 0.36, 1);
+                --pixr2-fast: 160ms;
+                --pixr2-normal: 240ms;
+            }
+            .navbar-brand,
+            .nav-link,
+            .btn,
+            .btn-close,
+            .form-control,
+            .list-group-item,
+            .page-link {
+                transition:
+                    color var(--pixr2-fast) var(--pixr2-ease),
+                    background-color var(--pixr2-fast) var(--pixr2-ease),
+                    border-color var(--pixr2-fast) var(--pixr2-ease),
+                    box-shadow var(--pixr2-fast) var(--pixr2-ease),
+                    opacity var(--pixr2-fast) var(--pixr2-ease),
+                    transform var(--pixr2-fast) var(--pixr2-ease);
+            }
+            .navbar-brand:hover,
+            .nav-link:hover,
+            .btn:hover:not(:disabled),
+            .page-link:hover,
+            .form-control:focus {
+                transform: translateY(-1px);
+            }
+            .btn:active:not(:disabled),
+            .page-link:active {
+                transform: translateY(0) scale(0.98);
+            }
+            .modal.fade .modal-dialog {
+                transform: translateY(12px) scale(0.98);
+                transition: transform var(--pixr2-normal) var(--pixr2-ease);
+            }
+            .modal.show .modal-dialog {
+                transform: none;
+            }
+            .toast {
+                transition:
+                    opacity var(--pixr2-normal) var(--pixr2-ease),
+                    transform var(--pixr2-normal) var(--pixr2-ease);
+            }
+            @keyframes pixr2-fade-up {
+                from { opacity: 0; transform: translateY(8px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                *,
+                *::before,
+                *::after {
+                    animation-duration: 0.01ms !important;
+                    animation-iteration-count: 1 !important;
+                    scroll-behavior: auto !important;
+                    transition-duration: 0.01ms !important;
+                }
+                .navbar-brand:hover,
+                .nav-link:hover,
+                .btn:hover:not(:disabled),
+                .page-link:hover,
+                .btn:active:not(:disabled),
+                .page-link:active,
+                .form-control:focus {
+                    transform: none;
+                }
+            }
+    `;
+}
+
 /**
  * 提供登录页面的HTML
  * @param {string|null} errorMessage - 如果有错误，则显示此消息
@@ -542,6 +613,7 @@ function serveLoginPage(errorMessage = null) {
         <title>PixR2 - 登录</title>
         <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
         <style>
+            ${getMotionStyles()}
             body {
                 display: flex;
                 align-items: center;
@@ -554,6 +626,9 @@ function serveLoginPage(errorMessage = null) {
                 max-width: 400px;
                 padding: 1rem;
                 margin: auto;
+            }
+            .form-signin .card {
+                animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
             }
         </style>
         <script>
@@ -612,15 +687,37 @@ function serveUploadPage() {
         <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
         <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css">
         <style>
+            ${getMotionStyles()}
+            main > .card {
+                animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+            }
             .dropzone {
                 border: 2px dashed #dee2e6;
                 border-radius: .375rem;
                 cursor: pointer;
-                transition: all 0.3s;
+                transition:
+                    background-color var(--pixr2-normal) var(--pixr2-ease),
+                    border-color var(--pixr2-normal) var(--pixr2-ease),
+                    box-shadow var(--pixr2-normal) var(--pixr2-ease),
+                    transform var(--pixr2-normal) var(--pixr2-ease);
             }
             .dropzone:hover, .dropzone.active {
                 border-color: #0d6efd;
                 background-color: rgba(13, 110, 253, 0.05);
+                box-shadow: 0 .75rem 1.5rem rgba(13, 110, 253, 0.12);
+                transform: translateY(-2px);
+            }
+            .dropzone .bi {
+                transition: transform var(--pixr2-normal) var(--pixr2-ease);
+            }
+            .dropzone:hover .bi,
+            .dropzone.active .bi {
+                transform: translateY(-2px) scale(1.06);
+            }
+            #selectedFiles .list-group-item,
+            #modalContent .alert,
+            #modalContent .card {
+                animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
             }
         </style>
         <script>
@@ -642,7 +739,7 @@ function serveUploadPage() {
         <header>
             <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
                 <div class="container">
-                    <a class="navbar-brand fw-bold" href="https://github.com/WangQueXL/PixR2">PixR2</a>
+                    <a class="navbar-brand fw-bold" href="/">PixR2</a>
                     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                         <span class="navbar-toggler-icon"></span>
                     </button>
@@ -856,18 +953,46 @@ function serveGalleryPage() {
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css">
     <style>
+        ${getMotionStyles()}
+        .container > .card {
+            animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+        }
+        .breadcrumb a {
+            display: inline-block;
+            transition:
+                color var(--pixr2-fast) var(--pixr2-ease),
+                transform var(--pixr2-fast) var(--pixr2-ease);
+        }
+        .breadcrumb a:hover {
+            transform: translateY(-1px);
+        }
+        .gallery .item {
+            animation: pixr2-fade-up 220ms var(--pixr2-ease) both;
+        }
         .gallery .item .card {
             cursor: pointer;
-            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+            overflow: hidden;
+            transition:
+                border-color var(--pixr2-normal) var(--pixr2-ease),
+                box-shadow var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
         }
         .gallery .item .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 .5rem 1rem rgba(0,0,0,.15)!important;
+            transform: translateY(-4px);
+            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
         }
         .gallery .item .file-image {
             width: 100%;
             aspect-ratio: 1 / 1;
             object-fit: cover;
+            background-color: #f8f9fa;
+            transition:
+                filter var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .card:hover .file-image {
+            filter: saturate(1.04);
+            transform: scale(1.035);
         }
         .gallery .item .checkbox {
             position: absolute;
@@ -875,13 +1000,25 @@ function serveGalleryPage() {
             left: 0.5rem;
             z-index: 10;
             background-color: #fff;
+            transition:
+                box-shadow var(--pixr2-fast) var(--pixr2-ease),
+                transform var(--pixr2-fast) var(--pixr2-ease);
         }
         .gallery .item.selected .card {
-             border-color: var(--bs-primary);
+            border-color: var(--bs-primary);
+            box-shadow: 0 0 0 .2rem rgba(13, 110, 253, 0.16)!important;
+            transform: translateY(-2px);
+        }
+        .gallery .item.selected .checkbox {
+            transform: scale(1.05);
         }
         .directory-icon {
             font-size: 4rem;
             color: #ffc107;
+            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .card:hover .directory-icon {
+            transform: scale(1.04);
         }
         .toast-container {
             z-index: 1100;
@@ -893,20 +1030,37 @@ function serveGalleryPage() {
             width: 100%;
             height: 100%;
             background-color: rgba(0, 0, 0, 0.85);
-            display: none;
+            display: flex;
             justify-content: center;
             align-items: center;
             z-index: 1200;
             cursor: pointer;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition:
+                opacity 220ms var(--pixr2-ease),
+                visibility 220ms var(--pixr2-ease);
         }
         .image-preview-overlay.show {
-            display: flex;
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
         }
         .preview-content {
             max-width: 90vw;
             max-height: 90vh;
             object-fit: contain;
             cursor: default;
+            opacity: 0;
+            transform: scale(0.96);
+            transition:
+                opacity 220ms var(--pixr2-ease),
+                transform 220ms var(--pixr2-ease);
+        }
+        .image-preview-overlay.show .preview-content {
+            opacity: 1;
+            transform: scale(1);
         }
         .loading-overlay {
             position: fixed;
@@ -921,11 +1075,20 @@ function serveGalleryPage() {
             z-index: 1250;
             opacity: 0;
             visibility: hidden;
-            transition: opacity 0.2s ease-in-out, visibility 0.2s;
+            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                visibility var(--pixr2-normal) var(--pixr2-ease);
         }
         .loading-overlay.show {
             opacity: 1;
             visibility: visible;
+        }
+        .loading-overlay .spinner-border {
+            transform: scale(0.92);
+            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .loading-overlay.show .spinner-border {
+            transform: scale(1);
         }
     </style>
     <script>
@@ -947,7 +1110,7 @@ function serveGalleryPage() {
     <header>
       <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
         <div class="container">
-          <a class="navbar-brand fw-bold" href="https://github.com/WangQueXL/PixR2">PixR2</a>
+          <a class="navbar-brand fw-bold" href="/">PixR2</a>
   
           <!-- 移动端折叠按钮 -->
           <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarButtons" aria-controls="navbarButtons" aria-expanded="false" aria-label="切换导航">
@@ -1132,6 +1295,7 @@ function serveGalleryPage() {
             let loadingStart = 0;
             let currentImageList = [];
             let currentImageIndex = -1;
+            let previewCloseTimer = null;
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -1691,6 +1855,7 @@ function serveGalleryPage() {
                 currentImageIndex = currentImageList.indexOf(imageUrl);
                 if (currentImageIndex === -1) return;
 
+                clearTimeout(previewCloseTimer);
                 previewImage.src = imageUrl;
                 imagePreview.classList.add('show');
                 updateNavButtons();
@@ -1698,8 +1863,13 @@ function serveGalleryPage() {
 
             function closePreview() {
                 imagePreview.classList.remove('show');
-                previewImage.src = '';
-                currentImageIndex = -1;
+                clearTimeout(previewCloseTimer);
+                previewCloseTimer = setTimeout(() => {
+                    if (!imagePreview.classList.contains('show')) {
+                        previewImage.src = '';
+                        currentImageIndex = -1;
+                    }
+                }, 220);
             }
 
             function updateNavButtons() {
@@ -1757,13 +1927,93 @@ function serveSharePage(shareId) {
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css">
     <style>
-        .gallery .item .card { cursor: pointer; transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out; }
-        .gallery .item .card:hover { transform: translateY(-5px); box-shadow: 0 .5rem 1rem rgba(0,0,0,.15)!important; }
-        .gallery .item .file-image { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
-        .directory-icon { font-size: 4rem; color: #ffc107; }
-        .image-preview-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.85); display: none; justify-content: center; align-items: center; z-index: 1200; cursor: pointer; }
-        .image-preview-overlay.show { display: flex; }
-        .preview-content { max-width: 90vw; max-height: 90vh; object-fit: contain; cursor: default; }
+        ${getMotionStyles()}
+        .container > .card {
+            animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+        }
+        .breadcrumb a {
+            display: inline-block;
+            transition:
+                color var(--pixr2-fast) var(--pixr2-ease),
+                transform var(--pixr2-fast) var(--pixr2-ease);
+        }
+        .breadcrumb a:hover {
+            transform: translateY(-1px);
+        }
+        .gallery .item {
+            animation: pixr2-fade-up 220ms var(--pixr2-ease) both;
+        }
+        .gallery .item .card {
+            cursor: pointer;
+            overflow: hidden;
+            transition:
+                box-shadow var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
+        }
+        .gallery .item .file-image {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            object-fit: cover;
+            background-color: #f8f9fa;
+            transition:
+                filter var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .card:hover .file-image {
+            filter: saturate(1.04);
+            transform: scale(1.035);
+        }
+        .directory-icon {
+            font-size: 4rem;
+            color: #ffc107;
+            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .gallery .item .card:hover .directory-icon {
+            transform: scale(1.04);
+        }
+        .image-preview-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1200;
+            cursor: pointer;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition:
+                opacity 220ms var(--pixr2-ease),
+                visibility 220ms var(--pixr2-ease);
+        }
+        .image-preview-overlay.show {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+        .preview-content {
+            max-width: 90vw;
+            max-height: 90vh;
+            object-fit: contain;
+            cursor: default;
+            opacity: 0;
+            transform: scale(0.96);
+            transition:
+                opacity 220ms var(--pixr2-ease),
+                transform 220ms var(--pixr2-ease);
+        }
+        .image-preview-overlay.show .preview-content {
+            opacity: 1;
+            transform: scale(1);
+        }
         .loading-overlay {
             position: fixed;
             top: 0;
@@ -1777,11 +2027,20 @@ function serveSharePage(shareId) {
             z-index: 1250;
             opacity: 0;
             visibility: hidden;
-            transition: opacity 0.2s ease-in-out, visibility 0.2s;
+            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                visibility var(--pixr2-normal) var(--pixr2-ease);
         }
         .loading-overlay.show {
             opacity: 1;
             visibility: visible;
+        }
+        .loading-overlay .spinner-border {
+            transform: scale(0.92);
+            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+        }
+        .loading-overlay.show .spinner-border {
+            transform: scale(1);
         }
     </style>
     <script>
@@ -1803,7 +2062,7 @@ function serveSharePage(shareId) {
     <header>
         <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
             <div class="container">
-                <a class="navbar-brand fw-bold" href="https://github.com/WangQueXL/PixR2">PixR2</a>
+                <a class="navbar-brand fw-bold" href="/">PixR2</a>
             </div>
         </nav>
     </header>
@@ -1844,6 +2103,7 @@ function serveSharePage(shareId) {
             let loadingStart = 0;
             let currentImageList = [];
             let currentImageIndex = -1;
+            let previewCloseTimer = null;
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -2047,6 +2307,7 @@ function serveSharePage(shareId) {
                 currentImageIndex = currentImageList.indexOf(imageUrl);
                 if (currentImageIndex === -1) return;
 
+                clearTimeout(previewCloseTimer);
                 previewImage.src = imageUrl;
                 imagePreview.classList.add('show');
                 updateNavButtons();
@@ -2054,8 +2315,13 @@ function serveSharePage(shareId) {
 
             function closePreview() {
                 imagePreview.classList.remove('show');
-                previewImage.src = '';
-                currentImageIndex = -1;
+                clearTimeout(previewCloseTimer);
+                previewCloseTimer = setTimeout(() => {
+                    if (!imagePreview.classList.contains('show')) {
+                        previewImage.src = '';
+                        currentImageIndex = -1;
+                    }
+                }, 220);
             }
 
             function updateNavButtons() {
@@ -2289,10 +2555,8 @@ async function handleCreateFolder(request, bucket) {
             folderPath += '/';
         }
 
-        // 创建一个.null文件来表示文件夹（这是S3/R2中的一种常见做法）
-        // 这不是严格必需的，但有助于处理空文件夹
-        const nullPath = `${folderPath}.null`;
-        await bucket.put(nullPath, new Uint8Array(0), {
+        // R2/S3 没有真正的目录；写入以 / 结尾的零字节对象作为空目录标记。
+        await bucket.put(folderPath, new Uint8Array(0), {
             httpMetadata: {
                 contentType: 'application/x-directory'
             }
@@ -2707,6 +2971,7 @@ async function listR2Files(request, bucket, forcePrefix = null) {
             if (object.key === prefix) return null;
             const name = object.key.substring(prefix.length);
             if (!name) return null;
+            if (name === '.null' || object.key.endsWith('/')) return null;
             return {
                 name,
                 key: object.key,
