@@ -2,11 +2,8 @@ name = "box"
 main = "src/index.js"
 compatibility_date = "2026-06-15"
 
-# R2/KV/Secret 推荐在 Cloudflare Dashboard 的 Worker 设置里绑定。
-# 如果你要使用 Wrangler CLI 部署，也可以取消下面配置的注释并填入自己的资源。
-#
 [vars]
-ENABLE_TELEGRAM_BOT = "false"
+ENABLE_TELEGRAM_BOT = "true"
 
 [[r2_buckets]]
 binding = "BUCKET_R2"
