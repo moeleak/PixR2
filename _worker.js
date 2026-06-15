@@ -166,6 +166,10 @@ export default {
 
         // 需要身份验证的API路由
         router.post('/api/upload', requireAuth((req, env) => handleWebUpload(req, env.BUCKET_R2)));
+        router.post('/api/upload/multipart/create', requireAuth((req, env) => handleCreateR2MultipartUpload(req, env.BUCKET_R2)));
+        router.post('/api/upload/multipart/part', requireAuth((req, env) => handleUploadR2MultipartPart(req, env.BUCKET_R2)));
+        router.post('/api/upload/multipart/complete', requireAuth((req, env) => handleCompleteR2MultipartUpload(req, env.BUCKET_R2)));
+        router.post('/api/upload/multipart/abort', requireAuth((req, env) => handleAbortR2MultipartUpload(req, env.BUCKET_R2)));
         router.get('/api/list', requireAuth((req, env) => handleListFiles(req, env.BUCKET_R2)));
         router.post('/api/delete', requireAuth((req, env) => handleDeleteFiles(req, env.BUCKET_R2)));
         router.post('/api/create-folder', requireAuth((req, env) => handleCreateFolder(req, env.BUCKET_R2)));
@@ -366,6 +370,44 @@ function getExtensionFromMime(mime = '') {
     return '';
 }
 
+function getMimeFromExtension(fileName = '') {
+    const extension = getFileExtension(fileName);
+    const extensionMimeMap = {
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        avif: 'image/avif',
+        bmp: 'image/bmp',
+        svg: 'image/svg+xml',
+        pdf: 'application/pdf',
+        zip: 'application/zip',
+        '7z': 'application/x-7z-compressed',
+        rar: 'application/x-rar-compressed',
+        txt: 'text/plain',
+        csv: 'text/csv',
+        json: 'application/json',
+        html: 'text/html',
+        css: 'text/css',
+        js: 'text/javascript',
+        md: 'text/markdown',
+        mp4: 'video/mp4',
+        webm: 'video/webm',
+        mov: 'video/quicktime',
+        mp3: 'audio/mpeg',
+        wav: 'audio/wav',
+        flac: 'audio/flac',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xls: 'application/vnd.ms-excel',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    };
+    return extensionMimeMap[extension] || '';
+}
+
 function getFileTypeInfo(fileName = '', mime = '') {
     const extension = getFileExtension(fileName);
     const normalizedMime = mime.toLowerCase().split(';')[0].trim();
@@ -436,6 +478,39 @@ async function buildUniqueR2Key(bucket, key) {
 function buildMarkdownLink(fileName, url, isImage) {
     const label = sanitizeFileName(fileName || 'file').replace(/[\[\]]/g, '');
     return isImage ? `![${label}](${url})` : `[${label}](${url})`;
+}
+
+function resolveUploadContentType(fileName = '', contentType = '') {
+    const normalizedContentType = contentType.split(';')[0].trim();
+    const inferredContentType = getMimeFromExtension(fileName);
+    return !normalizedContentType || normalizedContentType === 'application/octet-stream'
+        ? inferredContentType || 'application/octet-stream'
+        : normalizedContentType;
+}
+
+async function buildUploadTarget(bucket, { fileName: originalName = '', path = '', contentType = '', useRandomName = false }) {
+    if (!originalName) throw new Error('No file provided');
+
+    const resolvedContentType = resolveUploadContentType(originalName, contentType);
+    const storedName = buildStoredFileName(originalName, null, resolvedContentType, useRandomName);
+    let key = storedName;
+
+    if (path) {
+        const formattedPath = path.endsWith('/') ? path : `${path}/`;
+        key = `${formattedPath}${key}`;
+    }
+
+    if (!useRandomName) {
+        key = await buildUniqueR2Key(bucket, key);
+    }
+
+    const finalFileName = key.split('/').pop() || storedName;
+    return {
+        key,
+        contentType: resolvedContentType,
+        fileName: finalFileName,
+        fileTypeInfo: getFileTypeInfo(finalFileName, resolvedContentType)
+    };
 }
 
 function escapeHtmlForTelegram(value = '') {
@@ -723,19 +798,34 @@ function serveLoginPage(errorMessage = null) {
             ${getMotionStyles()}
             body {
                 display: flex;
-                align-items: center;
+                align-items: flex-start;
                 justify-content: center;
                 min-height: 100vh;
+                min-height: 100dvh;
+                margin: 0;
+                padding: 2rem 1rem;
                 background-color: #f8f9fa;
             }
             .form-signin {
                 width: 100%;
                 max-width: 400px;
-                padding: 1rem;
-                margin: auto;
+                padding: 0;
+                margin: min(12vh, 5rem) auto 0;
             }
             .form-signin .card {
                 animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+            }
+            @media (max-width: 575.98px) {
+                body {
+                    min-height: 100svh;
+                    padding-top: 1.25rem;
+                }
+                .form-signin {
+                    margin-top: 0;
+                }
+                .form-signin .card-body {
+                    padding: 2rem !important;
+                }
             }
         </style>
         <script>
@@ -826,6 +916,15 @@ function serveUploadPage() {
             #modalContent .card {
                 animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
             }
+            .min-w-0 {
+                min-width: 0;
+            }
+            .upload-progress-wrap .progress {
+                height: .45rem;
+            }
+            .upload-progress-wrap .progress-bar {
+                transition: width 160ms var(--pixr2-ease);
+            }
         </style>
         <script>
             // SVG 原始代码
@@ -915,6 +1014,10 @@ function serveUploadPage() {
                 const modalContent = document.getElementById('modalContent');
 
                 let selectedFiles = [];
+                let uploadInProgress = false;
+                let uploadProgress = [];
+                const MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
+                const MULTIPART_CONCURRENCY = 4;
 
                 function escapeHtml(value = '') {
                     const htmlEscapes = {
@@ -957,6 +1060,7 @@ function serveUploadPage() {
                 }
 
                 function handleFiles(files) {
+                    if (uploadInProgress) return;
                     const validFiles = Array.from(files).filter(file => file && file.name);
                     if (validFiles.length === 0) return;
                     selectedFiles = [...selectedFiles, ...validFiles];
@@ -973,14 +1077,27 @@ function serveUploadPage() {
                     selectedFiles.forEach((file, index) => {
                         const item = document.createElement('li');
                         const safeName = escapeHtml(file.name);
+                        const progress = uploadProgress[index] || { percent: 0, status: '等待上传' };
+                        const progressPercent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+                        const progressClass = progress.error ? 'bg-danger' : progress.done ? 'bg-success' : '';
 		                        item.className = 'list-group-item d-flex justify-content-between align-items-center gap-3';
 		                        item.innerHTML = \`
-		                            <span class="d-flex align-items-center min-w-0">
-		                                <i class="bi \${getClientFileIcon(file)} me-2 text-secondary"></i>
-		                                <span class="text-truncate" title="\${safeName}">\${safeName}</span>
-		                                <small class="text-muted ms-2 flex-shrink-0">\${formatFileSize(file.size)}</small>
-		                            </span>
-		                            <button type="button" class="btn-close" aria-label="Remove" data-index="\${index}"></button>
+		                            <div class="flex-grow-1 min-w-0">
+		                                <div class="d-flex align-items-center min-w-0">
+		                                    <i class="bi \${getClientFileIcon(file)} me-2 text-secondary flex-shrink-0"></i>
+		                                    <span class="text-truncate" title="\${safeName}">\${safeName}</span>
+		                                    <small class="text-muted ms-2 flex-shrink-0">\${formatFileSize(file.size)}</small>
+		                                </div>
+		                                \${uploadInProgress ? \`
+		                                    <div class="upload-progress-wrap mt-2" data-index="\${index}">
+		                                        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="\${progressPercent}">
+		                                            <div class="progress-bar \${progressClass}" style="width: \${progressPercent}%"></div>
+		                                        </div>
+		                                        <div class="small text-muted mt-1 upload-progress-label">\${escapeHtml(progress.status || progressPercent + '%')}</div>
+		                                    </div>
+		                                \` : ''}
+		                            </div>
+		                            <button type="button" class="btn-close" aria-label="Remove" data-index="\${index}" \${uploadInProgress ? 'disabled' : ''}></button>
 	                        \`;
                         list.appendChild(item);
                     });
@@ -989,6 +1106,7 @@ function serveUploadPage() {
                     document.querySelectorAll('#selectedFiles .btn-close').forEach(btn => {
                         btn.addEventListener('click', (e) => {
                             const index = parseInt(e.target.dataset.index);
+                            if (uploadInProgress) return;
                             selectedFiles.splice(index, 1);
                             updateFilePreview();
                             uploadBtn.disabled = selectedFiles.length === 0;
@@ -996,28 +1114,193 @@ function serveUploadPage() {
                     });
                 }
 
+                function setUploadProgress(index, state) {
+                    uploadProgress[index] = { ...(uploadProgress[index] || {}), ...state };
+                    const progress = uploadProgress[index];
+                    const progressPercent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+                    const wrap = selectedFilesContainer.querySelector(\`.upload-progress-wrap[data-index="\${index}"]\`);
+                    if (!wrap) return;
+
+                    const progressElement = wrap.querySelector('.progress');
+                    const progressBar = wrap.querySelector('.progress-bar');
+                    const progressLabel = wrap.querySelector('.upload-progress-label');
+                    if (progressElement) progressElement.setAttribute('aria-valuenow', String(progressPercent));
+                    if (progressBar) {
+                        progressBar.style.width = progressPercent + '%';
+                        progressBar.classList.toggle('bg-success', !!progress.done);
+                        progressBar.classList.toggle('bg-danger', !!progress.error);
+                    }
+                    if (progressLabel) progressLabel.textContent = progress.status || progressPercent + '%';
+                }
+
+                async function postUploadJson(endpoint, payload) {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.success) {
+                        throw new Error(data.message || '上传失败');
+                    }
+                    return data;
+                }
+
+                function uploadChunk(uploadUrl, chunk, contentType, onProgress) {
+                    return new Promise(resolve => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', uploadUrl);
+                        xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
+
+                        xhr.upload.onprogress = event => {
+                            if (event.lengthComputable) {
+                                onProgress(event.loaded);
+                            }
+                        };
+
+                        xhr.onload = () => {
+                            let response = {};
+                            try {
+                                response = JSON.parse(xhr.responseText || '{}');
+                            } catch {
+                                response = {};
+                            }
+                            if (xhr.status >= 200 && xhr.status < 300 && !response.error) {
+                                resolve(response);
+                                return;
+                            }
+                            resolve({ error: true, message: response.message || '上传失败' });
+                        };
+
+                        xhr.onerror = () => {
+                            resolve({ error: true, message: '网络错误' });
+                        };
+
+                        xhr.onabort = () => {
+                            resolve({ error: true, message: '已取消' });
+                        };
+
+                        xhr.send(chunk);
+                    });
+                }
+
+                async function uploadFile(file, index) {
+                    let multipartUpload = null;
+                    try {
+                        const contentType = file.type || 'application/octet-stream';
+                        setUploadProgress(index, { percent: 0, status: '准备上传' });
+                        multipartUpload = await postUploadJson('/api/upload/multipart/create', {
+                            filename: file.name,
+                            path: '',
+                            randomName: randomName.checked,
+                            contentType
+                        });
+
+                        const totalParts = Math.max(1, Math.ceil(file.size / MULTIPART_CHUNK_SIZE));
+                        const uploadedParts = new Array(totalParts);
+                        const partLoadedBytes = new Array(totalParts).fill(0);
+                        const parallelCount = Math.min(MULTIPART_CONCURRENCY, totalParts);
+                        let nextPartNumber = 1;
+                        let completedParts = 0;
+                        let failed = false;
+                        const errors = [];
+
+                        const updateTotalProgress = (partNumber, loaded) => {
+                            partLoadedBytes[partNumber - 1] = loaded;
+                            const uploadedBytes = partLoadedBytes.reduce((sum, value) => sum + value, 0);
+                            const percent = file.size > 0 ? Math.round((uploadedBytes / file.size) * 100) : 100;
+                            setUploadProgress(index, {
+                                percent,
+                                status: \`上传中 \${percent}%（\${completedParts}/\${totalParts}，并发 \${parallelCount}）\`
+                            });
+                        };
+
+                        const uploadPart = async partNumber => {
+                            const start = (partNumber - 1) * MULTIPART_CHUNK_SIZE;
+                            const end = Math.min(start + MULTIPART_CHUNK_SIZE, file.size);
+                            const chunk = file.slice(start, end);
+                            const partUrl = new URL('/api/upload/multipart/part', window.location.origin);
+                            partUrl.searchParams.set('key', multipartUpload.key);
+                            partUrl.searchParams.set('uploadId', multipartUpload.uploadId);
+                            partUrl.searchParams.set('partNumber', String(partNumber));
+
+                            const partResult = await uploadChunk(
+                                partUrl.pathname + partUrl.search,
+                                chunk,
+                                contentType,
+                                loaded => updateTotalProgress(partNumber, loaded)
+                            );
+
+                            if (partResult.error || !partResult.part) {
+                                throw new Error(partResult.message || '上传分片失败');
+                            }
+                            uploadedParts[partNumber - 1] = partResult.part;
+                            completedParts += 1;
+                            updateTotalProgress(partNumber, end - start);
+                            const uploadedBytes = partLoadedBytes.reduce((sum, value) => sum + value, 0);
+                            const percent = file.size > 0 ? Math.round((uploadedBytes / file.size) * 100) : 100;
+                            setUploadProgress(index, {
+                                percent,
+                                status: \`上传中 \${percent}%（\${completedParts}/\${totalParts}，并发 \${parallelCount}）\`
+                            });
+                        };
+
+                        const workers = Array.from({ length: parallelCount }, async () => {
+                            while (!failed && nextPartNumber <= totalParts) {
+                                const partNumber = nextPartNumber++;
+                                try {
+                                    await uploadPart(partNumber);
+                                } catch (error) {
+                                    failed = true;
+                                    errors.push(error);
+                                }
+                            }
+                        });
+
+                        await Promise.all(workers);
+                        if (errors.length > 0) throw errors[0];
+
+                        const completedUpload = await postUploadJson('/api/upload/multipart/complete', {
+                            key: multipartUpload.key,
+                            uploadId: multipartUpload.uploadId,
+                            parts: uploadedParts.filter(Boolean),
+                            contentType: multipartUpload.contentType
+                        });
+
+                        setUploadProgress(index, { percent: 100, status: '上传完成', done: true });
+                        return completedUpload;
+                    } catch (error) {
+                        if (multipartUpload?.key && multipartUpload?.uploadId) {
+                            await postUploadJson('/api/upload/multipart/abort', {
+                                key: multipartUpload.key,
+                                uploadId: multipartUpload.uploadId
+                            }).catch(() => {});
+                        }
+                        setUploadProgress(index, { status: '上传失败', error: true });
+                        return { error: true, message: error.message || '上传失败', name: file.name };
+                    }
+                }
+
                 uploadBtn.addEventListener('click', async () => {
                     if (selectedFiles.length === 0) return;
                     uploadBtn.disabled = true;
                     uploadBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 上传中...';
+                    uploadInProgress = true;
+                    uploadProgress = selectedFiles.map(() => ({ percent: 0, status: '等待上传' }));
+                    updateFilePreview();
 
-                    const uploadPromises = selectedFiles.map(file => {
-		                        const formData = new FormData();
-		                        formData.append('file', file);
-		                        formData.append('path', '');
-		                        formData.append('randomName', randomName.checked ? 'true' : 'false');
-		                        return fetch('/api/upload', { method: 'POST', body: formData })
-	                            .then(response => response.ok ? response.json() : Promise.reject('上传失败'))
-	                            .catch(error => ({ error: true, message: error?.message || String(error), name: file.name }));
-	                    });
+                    const uploadPromises = selectedFiles.map((file, index) => uploadFile(file, index));
 
                     const results = await Promise.all(uploadPromises);
                     displayResults(results);
 
                     uploadBtn.disabled = false;
 	                    uploadBtn.textContent = '上传文件';
+                    uploadInProgress = false;
+                    uploadProgress = [];
                     selectedFiles = [];
                     updateFilePreview();
+                    uploadBtn.disabled = true;
                 });
 
                 function displayResults(results) {
@@ -1432,6 +1715,44 @@ function serveGalleryPage() {
 	        .toast-container {
 	            z-index: 1100;
 	        }
+	        .dropzone {
+	            border: 2px dashed #dee2e6;
+	            border-radius: .375rem;
+	            cursor: pointer;
+	            transition:
+	                background-color var(--pixr2-normal) var(--pixr2-ease),
+	                border-color var(--pixr2-normal) var(--pixr2-ease),
+	                box-shadow var(--pixr2-normal) var(--pixr2-ease),
+	                transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .dropzone:hover,
+	        .dropzone.active {
+	            border-color: #0d6efd;
+	            background-color: rgba(13, 110, 253, 0.05);
+	            box-shadow: 0 .75rem 1.5rem rgba(13, 110, 253, 0.12);
+	            transform: translateY(-2px);
+	        }
+	        .dropzone .bi {
+	            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .dropzone:hover .bi,
+	        .dropzone.active .bi {
+	            transform: translateY(-2px) scale(1.06);
+	        }
+	        .min-w-0 {
+	            min-width: 0;
+	        }
+	        .upload-progress-wrap .progress {
+	            height: .45rem;
+	        }
+	        .upload-progress-wrap .progress-bar {
+	            transition: width 160ms var(--pixr2-ease);
+	        }
+	        #gallerySelectedFiles .list-group-item,
+	        #galleryUploadResults .alert,
+	        #galleryUploadResults .card {
+	            animation: pixr2-fade-up var(--pixr2-normal) var(--pixr2-ease) both;
+	        }
         .image-preview-overlay {
             position: fixed;
             top: 0;
@@ -1552,9 +1873,9 @@ function serveGalleryPage() {
           <!-- 按钮区 -->
           <div class="collapse navbar-collapse justify-content-end" id="navbarButtons">
             <div class="d-flex flex-lg-row flex-column align-items-lg-center pt-2 pt-lg-0">
-	                <a href="/upload" class="btn btn-primary me-lg-2 mb-2 mb-lg-0">
+	                <button id="openUploadModalBtn" class="btn btn-primary me-lg-2 mb-2 mb-lg-0" type="button">
 	                    <i class="bi bi-upload me-1"></i>上传文件
-                </a>
+                </button>
                 <button id="newFolderBtn" class="btn btn-outline-secondary me-lg-2 mb-2 mb-lg-0">
                     <i class="bi bi-folder-plus me-1"></i>新建文件夹
                 </button>
@@ -1626,6 +1947,36 @@ function serveGalleryPage() {
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" id="createFolderBtn" class="btn btn-primary">创建</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="uploadModalLabel">上传文件</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-3">当前位置：<span id="uploadCurrentPath" class="font-monospace">/</span></div>
+                    <div class="dropzone text-center p-5 mb-3" id="galleryDropzone">
+                        <i class="bi bi-upload fs-1 text-primary"></i>
+                        <p class="mt-3 mb-1">拖拽文件到此处或点击选择文件</p>
+                        <p class="text-muted small mb-0">支持图片、文档、压缩包、音视频和其他常见文件</p>
+                        <input type="file" id="galleryFileInput" class="d-none" multiple>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="galleryRandomName">
+                        <label class="form-check-label" for="galleryRandomName">使用随机文件名</label>
+                    </div>
+                    <div id="gallerySelectedFiles" class="mb-3"></div>
+                    <div id="galleryUploadResults"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+                    <button type="button" id="galleryUploadBtn" class="btn btn-primary" disabled>上传文件</button>
                 </div>
             </div>
         </div>
@@ -1767,9 +2118,25 @@ function serveGalleryPage() {
             const shareCreatedModal = new bootstrap.Modal(document.getElementById('shareCreatedModal'));
             const manageSharesModal = new bootstrap.Modal(document.getElementById('manageSharesModal'));
             const moveCopyModal = new bootstrap.Modal(document.getElementById('moveCopyModal'));
+            const uploadModalEl = document.getElementById('uploadModal');
+            const uploadModal = new bootstrap.Modal(uploadModalEl);
             const sharesListEl = document.getElementById('sharesList');
+            const openUploadModalBtn = document.getElementById('openUploadModalBtn');
+            const galleryDropzone = document.getElementById('galleryDropzone');
+            const galleryFileInput = document.getElementById('galleryFileInput');
+            const gallerySelectedFilesContainer = document.getElementById('gallerySelectedFiles');
+            const galleryUploadBtn = document.getElementById('galleryUploadBtn');
+            const galleryRandomName = document.getElementById('galleryRandomName');
+            const galleryUploadResults = document.getElementById('galleryUploadResults');
+            const uploadCurrentPath = document.getElementById('uploadCurrentPath');
             
             let currentAction = ''; // 'move' or 'copy'
+            let gallerySelectedFiles = [];
+            let galleryUploadInProgress = false;
+            let galleryUploadProgress = [];
+            let galleryUploadCompleted = false;
+            const MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
+            const MULTIPART_CONCURRENCY = 4;
 
             const urlParams = new URLSearchParams(window.location.search);
             currentPage = parseInt(urlParams.get('page')) || 1;
@@ -1930,6 +2297,7 @@ function serveGalleryPage() {
 	                    } else { // isFile
                        col.dataset.key = item.key;
                        col.dataset.itemType = 'file';
+                       if (item.isImage) col.dataset.previewUrl = item.url;
                        col.innerHTML = \`
                            <div class="card h-100 position-relative">
                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
@@ -1960,7 +2328,6 @@ function serveGalleryPage() {
 		                                       </div>
 		                                       \${item.name !== '.null' ? \`
 		                                           <div class="btn-group flex-shrink-0 file-actions">
-		                                               \${item.isImage ? \`<button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${safeUrl}" title="预览"><i class="bi bi-eye"></i></button>\` : ''}
 		                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${safeDirectUrl}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
 		                                           </div>
 		                                       \` : ''}
@@ -2154,15 +2521,13 @@ function serveGalleryPage() {
                         return;
                     }
 
-                    const previewBtn = e.target.closest('.preview-btn');
-                    if (previewBtn) {
-                        e.stopPropagation(); // 防止触发选中
-                        openPreview(previewBtn.dataset.url);
+                    if (itemEl.dataset.previewUrl) {
+                        e.stopPropagation();
+                        openPreview(itemEl.dataset.previewUrl);
                         return;
                     }
 
                     const isSelectableTarget = e.target.classList.contains('checkbox') ||
-                                               e.target.classList.contains('file-image') ||
                                                e.target.closest('.file-icon-shell') ||
                                                e.target.classList.contains('bi-file-earmark-binary') ||
                                                e.target.closest('.card-footer');
@@ -2229,6 +2594,364 @@ function serveGalleryPage() {
                     }
                 });
                 updateControls();
+            });
+
+            function getClientFileIcon(file) {
+                const name = file.name.toLowerCase();
+                const type = (file.type || '').toLowerCase();
+                const ext = name.includes('.') ? name.split('.').pop() : '';
+                if (type.startsWith('image/')) return 'bi-file-earmark-image';
+                if (type.startsWith('video/')) return 'bi-file-earmark-play';
+                if (type.startsWith('audio/')) return 'bi-file-earmark-music';
+                if (ext === 'pdf') return 'bi-file-earmark-pdf';
+                if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'bi-file-earmark-zip';
+                if (['doc', 'docx'].includes(ext)) return 'bi-file-earmark-word';
+                if (['xls', 'xlsx', 'csv'].includes(ext)) return 'bi-file-earmark-spreadsheet';
+                if (['ppt', 'pptx'].includes(ext)) return 'bi-file-earmark-slides';
+                if (['js', 'ts', 'html', 'css', 'json', 'md', 'py', 'go', 'rs', 'java', 'php', 'sh'].includes(ext)) return 'bi-file-earmark-code';
+                if (type.startsWith('text/') || ['txt', 'log'].includes(ext)) return 'bi-file-earmark-text';
+                return 'bi-file-earmark';
+            }
+
+            function resetGalleryUpload() {
+                gallerySelectedFiles = [];
+                galleryUploadProgress = [];
+                galleryUploadInProgress = false;
+                galleryUploadCompleted = false;
+                gallerySelectedFilesContainer.innerHTML = '';
+                galleryUploadResults.innerHTML = '';
+                galleryFileInput.value = '';
+                galleryRandomName.checked = false;
+                galleryUploadBtn.disabled = true;
+                galleryUploadBtn.textContent = '上传文件';
+            }
+
+            function updateGalleryUploadPreview() {
+                gallerySelectedFilesContainer.innerHTML = '';
+                if (gallerySelectedFiles.length === 0) {
+                    galleryUploadBtn.disabled = true;
+                    return;
+                }
+
+                const list = document.createElement('ul');
+                list.className = 'list-group';
+                gallerySelectedFiles.forEach((file, index) => {
+                    const item = document.createElement('li');
+                    const safeName = escapeHtml(file.name);
+                    const progress = galleryUploadProgress[index] || { percent: 0, status: '等待上传' };
+                    const progressPercent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+                    const progressClass = progress.error ? 'bg-danger' : progress.done ? 'bg-success' : '';
+                    item.className = 'list-group-item d-flex justify-content-between align-items-center gap-3';
+                    item.innerHTML = \`
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="d-flex align-items-center min-w-0">
+                                <i class="bi \${getClientFileIcon(file)} me-2 text-secondary flex-shrink-0"></i>
+                                <span class="text-truncate" title="\${safeName}">\${safeName}</span>
+                                <small class="text-muted ms-2 flex-shrink-0">\${formatFileSize(file.size)}</small>
+                            </div>
+                            \${galleryUploadInProgress ? \`
+                                <div class="upload-progress-wrap mt-2" data-index="\${index}">
+                                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="\${progressPercent}">
+                                        <div class="progress-bar \${progressClass}" style="width: \${progressPercent}%"></div>
+                                    </div>
+                                    <div class="small text-muted mt-1 upload-progress-label">\${escapeHtml(progress.status || progressPercent + '%')}</div>
+                                </div>
+                            \` : ''}
+                        </div>
+                        <button type="button" class="btn-close" aria-label="Remove" data-index="\${index}" \${galleryUploadInProgress ? 'disabled' : ''}></button>
+                    \`;
+                    list.appendChild(item);
+                });
+                gallerySelectedFilesContainer.appendChild(list);
+                galleryUploadBtn.disabled = galleryUploadInProgress || gallerySelectedFiles.length === 0;
+
+                gallerySelectedFilesContainer.querySelectorAll('.btn-close').forEach(btn => {
+                    btn.addEventListener('click', event => {
+                        if (galleryUploadInProgress) return;
+                        const index = parseInt(event.currentTarget.dataset.index);
+                        gallerySelectedFiles.splice(index, 1);
+                        updateGalleryUploadPreview();
+                    });
+                });
+            }
+
+            function handleGalleryUploadFiles(files) {
+                if (galleryUploadInProgress) return;
+                const validFiles = Array.from(files).filter(file => file && file.name);
+                if (validFiles.length === 0) return;
+                galleryUploadResults.innerHTML = '';
+                gallerySelectedFiles = [...gallerySelectedFiles, ...validFiles];
+                updateGalleryUploadPreview();
+            }
+
+            function setGalleryUploadProgress(index, state) {
+                galleryUploadProgress[index] = { ...(galleryUploadProgress[index] || {}), ...state };
+                const progress = galleryUploadProgress[index];
+                const progressPercent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+                const wrap = gallerySelectedFilesContainer.querySelector(\`.upload-progress-wrap[data-index="\${index}"]\`);
+                if (!wrap) return;
+
+                const progressElement = wrap.querySelector('.progress');
+                const progressBar = wrap.querySelector('.progress-bar');
+                const progressLabel = wrap.querySelector('.upload-progress-label');
+                if (progressElement) progressElement.setAttribute('aria-valuenow', String(progressPercent));
+                if (progressBar) {
+                    progressBar.style.width = progressPercent + '%';
+                    progressBar.classList.toggle('bg-success', !!progress.done);
+                    progressBar.classList.toggle('bg-danger', !!progress.error);
+                }
+                if (progressLabel) progressLabel.textContent = progress.status || progressPercent + '%';
+            }
+
+            async function postUploadJson(endpoint, payload) {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || '上传失败');
+                }
+                return data;
+            }
+
+            function uploadGalleryChunk(uploadUrl, chunk, contentType, onProgress) {
+                return new Promise(resolve => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', uploadUrl);
+                    xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
+
+                    xhr.upload.onprogress = event => {
+                        if (event.lengthComputable) {
+                            onProgress(event.loaded);
+                        }
+                    };
+
+                    xhr.onload = () => {
+                        let response = {};
+                        try {
+                            response = JSON.parse(xhr.responseText || '{}');
+                        } catch {
+                            response = {};
+                        }
+                        if (xhr.status >= 200 && xhr.status < 300 && !response.error) {
+                            resolve(response);
+                            return;
+                        }
+                        resolve({ error: true, message: response.message || '上传失败' });
+                    };
+
+                    xhr.onerror = () => {
+                        resolve({ error: true, message: '网络错误' });
+                    };
+
+                    xhr.send(chunk);
+                });
+            }
+
+            async function uploadGalleryFile(file, index) {
+                let multipartUpload = null;
+                try {
+                    const contentType = file.type || 'application/octet-stream';
+                    setGalleryUploadProgress(index, { percent: 0, status: '准备上传' });
+                    multipartUpload = await postUploadJson('/api/upload/multipart/create', {
+                        filename: file.name,
+                        path: currentPath,
+                        randomName: galleryRandomName.checked,
+                        contentType
+                    });
+
+                    const totalParts = Math.max(1, Math.ceil(file.size / MULTIPART_CHUNK_SIZE));
+                    const uploadedParts = new Array(totalParts);
+                    const partLoadedBytes = new Array(totalParts).fill(0);
+                    const parallelCount = Math.min(MULTIPART_CONCURRENCY, totalParts);
+                    let nextPartNumber = 1;
+                    let completedParts = 0;
+                    let failed = false;
+                    const errors = [];
+
+                    const updateTotalProgress = (partNumber, loaded) => {
+                        partLoadedBytes[partNumber - 1] = loaded;
+                        const uploadedBytes = partLoadedBytes.reduce((sum, value) => sum + value, 0);
+                        const percent = file.size > 0 ? Math.round((uploadedBytes / file.size) * 100) : 100;
+                        setGalleryUploadProgress(index, {
+                            percent,
+                            status: \`上传中 \${percent}%（\${completedParts}/\${totalParts}，并发 \${parallelCount}）\`
+                        });
+                    };
+
+                    const uploadPart = async partNumber => {
+                        const start = (partNumber - 1) * MULTIPART_CHUNK_SIZE;
+                        const end = Math.min(start + MULTIPART_CHUNK_SIZE, file.size);
+                        const chunk = file.slice(start, end);
+                        const partUrl = new URL('/api/upload/multipart/part', window.location.origin);
+                        partUrl.searchParams.set('key', multipartUpload.key);
+                        partUrl.searchParams.set('uploadId', multipartUpload.uploadId);
+                        partUrl.searchParams.set('partNumber', String(partNumber));
+
+                        const partResult = await uploadGalleryChunk(
+                            partUrl.pathname + partUrl.search,
+                            chunk,
+                            contentType,
+                            loaded => updateTotalProgress(partNumber, loaded)
+                        );
+
+                        if (partResult.error || !partResult.part) {
+                            throw new Error(partResult.message || '上传分片失败');
+                        }
+                        uploadedParts[partNumber - 1] = partResult.part;
+                        completedParts += 1;
+                        updateTotalProgress(partNumber, end - start);
+                        const uploadedBytes = partLoadedBytes.reduce((sum, value) => sum + value, 0);
+                        const percent = file.size > 0 ? Math.round((uploadedBytes / file.size) * 100) : 100;
+                        setGalleryUploadProgress(index, {
+                            percent,
+                            status: \`上传中 \${percent}%（\${completedParts}/\${totalParts}，并发 \${parallelCount}）\`
+                        });
+                    };
+
+                    const workers = Array.from({ length: parallelCount }, async () => {
+                        while (!failed && nextPartNumber <= totalParts) {
+                            const partNumber = nextPartNumber++;
+                            try {
+                                await uploadPart(partNumber);
+                            } catch (error) {
+                                failed = true;
+                                errors.push(error);
+                            }
+                        }
+                    });
+
+                    await Promise.all(workers);
+                    if (errors.length > 0) throw errors[0];
+
+                    const completedUpload = await postUploadJson('/api/upload/multipart/complete', {
+                        key: multipartUpload.key,
+                        uploadId: multipartUpload.uploadId,
+                        parts: uploadedParts.filter(Boolean),
+                        contentType: multipartUpload.contentType
+                    });
+
+                    setGalleryUploadProgress(index, { percent: 100, status: '上传完成', done: true });
+                    return completedUpload;
+                } catch (error) {
+                    if (multipartUpload?.key && multipartUpload?.uploadId) {
+                        await postUploadJson('/api/upload/multipart/abort', {
+                            key: multipartUpload.key,
+                            uploadId: multipartUpload.uploadId
+                        }).catch(() => {});
+                    }
+                    setGalleryUploadProgress(index, { status: '上传失败', error: true });
+                    return { error: true, message: error.message || '上传失败', name: file.name };
+                }
+            }
+
+            function displayGalleryUploadResults(results) {
+                galleryUploadResults.innerHTML = '';
+                const successfulUploads = results.filter(result => !result.error);
+                const failedUploads = results.filter(result => result.error);
+
+                if (failedUploads.length > 0) {
+                    const errorAlert = document.createElement('div');
+                    const failedNames = failedUploads.map(file => escapeHtml(file.name || '未知文件')).join(', ');
+                    errorAlert.className = 'alert alert-danger';
+                    errorAlert.innerHTML = \`<strong>\${failedUploads.length} 个文件上传失败:</strong> \${failedNames}\`;
+                    galleryUploadResults.appendChild(errorAlert);
+                }
+
+                successfulUploads.forEach(result => {
+                    const linkItem = document.createElement('div');
+                    const safeKey = escapeHtml(result.key || '');
+                    const safeUrl = escapeHtml(result.url || '');
+                    const safeMarkdown = escapeHtml(result.markdown || '');
+                    linkItem.className = 'card mb-3';
+                    linkItem.innerHTML = \`
+                        <div class="card-header">\${safeKey}</div>
+                        <div class="card-body">
+                            <div class="mb-2">
+                                <label class="form-label small">直接链接</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control form-control-sm" value="\${safeUrl}" readonly>
+                                    <button class="btn btn-outline-secondary btn-sm upload-copy-btn" data-text="\${safeUrl}">复制</button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="form-label small">Markdown</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control form-control-sm" value="\${safeMarkdown}" readonly>
+                                    <button class="btn btn-outline-secondary btn-sm upload-copy-btn" data-text="\${safeMarkdown}">复制</button>
+                                </div>
+                            </div>
+                        </div>
+                    \`;
+                    galleryUploadResults.appendChild(linkItem);
+                });
+
+                galleryUploadResults.querySelectorAll('.upload-copy-btn').forEach(btn => {
+                    btn.addEventListener('click', event => {
+                        const button = event.currentTarget;
+                        writeToClipboard(button.dataset.text).then(() => {
+                            const originalText = button.textContent;
+                            button.textContent = '已复制';
+                            setTimeout(() => { button.textContent = originalText; }, 1500);
+                        });
+                    });
+                });
+            }
+
+            openUploadModalBtn.addEventListener('click', () => {
+                resetGalleryUpload();
+                uploadCurrentPath.textContent = currentPath || '/';
+                uploadModal.show();
+            });
+
+            uploadModalEl.addEventListener('hide.bs.modal', event => {
+                if (galleryUploadInProgress) {
+                    event.preventDefault();
+                }
+            });
+
+            uploadModalEl.addEventListener('hidden.bs.modal', () => {
+                if (!galleryUploadInProgress) resetGalleryUpload();
+            });
+
+            galleryDropzone.addEventListener('click', () => galleryFileInput.click());
+            galleryDropzone.addEventListener('dragover', event => {
+                event.preventDefault();
+                galleryDropzone.classList.add('active');
+            });
+            galleryDropzone.addEventListener('dragleave', () => galleryDropzone.classList.remove('active'));
+            galleryDropzone.addEventListener('drop', event => {
+                event.preventDefault();
+                galleryDropzone.classList.remove('active');
+                handleGalleryUploadFiles(event.dataTransfer.files);
+            });
+            galleryFileInput.addEventListener('change', () => handleGalleryUploadFiles(galleryFileInput.files));
+
+            galleryUploadBtn.addEventListener('click', async () => {
+                if (gallerySelectedFiles.length === 0 || galleryUploadInProgress) return;
+                galleryUploadBtn.disabled = true;
+                galleryUploadBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 上传中...';
+                galleryUploadInProgress = true;
+                galleryUploadProgress = gallerySelectedFiles.map(() => ({ percent: 0, status: '等待上传' }));
+                updateGalleryUploadPreview();
+
+                const results = await Promise.all(gallerySelectedFiles.map((file, index) => uploadGalleryFile(file, index)));
+                displayGalleryUploadResults(results);
+
+                galleryUploadInProgress = false;
+                galleryUploadCompleted = results.some(result => !result.error);
+                gallerySelectedFiles = [];
+                galleryUploadProgress = [];
+                updateGalleryUploadPreview();
+                galleryUploadBtn.textContent = '上传文件';
+                galleryUploadBtn.disabled = true;
+                galleryFileInput.value = '';
+                if (galleryUploadCompleted) {
+                    showNotification('上传完成', 'success');
+                    refreshGallery();
+                }
             });
 
             document.getElementById('newFolderBtn').addEventListener('click', () => folderModal.show());
@@ -3192,6 +3915,7 @@ function serveSharePage(shareId) {
 		                            </div>
 		                        \`;
                     } else {
+                        if (item.isImage) col.dataset.previewUrl = item.url;
                         col.innerHTML = \`
                            <div class="card h-100">
 	                               \${item.name === '.null'
@@ -3220,7 +3944,6 @@ function serveSharePage(shareId) {
 		                                       </div>
 		                                       \${item.name !== '.null' ? \`
 		                                           <div class="btn-group flex-shrink-0 file-actions">
-		                                               \${item.isImage ? \`<button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${safeUrl}" title="预览"><i class="bi bi-eye"></i></button>\` : ''}
 		                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${safeDirectUrl}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
 		                                           </div>
 		                                       \` : ''}
@@ -3391,9 +4114,9 @@ function serveSharePage(shareId) {
                         return;
                     }
 
-                    const previewBtn = e.target.closest('.preview-btn');
-                    if (previewBtn) {
-                        openPreview(previewBtn.dataset.url);
+                    const itemEl = card.closest('.item');
+                    if (itemEl?.dataset.previewUrl) {
+                        openPreview(itemEl.dataset.previewUrl);
                     }
                 }
             });
@@ -3544,11 +4267,70 @@ function serveSharePage(shareId) {
  */
 async function handleWebUpload(request, bucket) {
     try {
-        // 解析表单数据
-	        const formData = await request.formData();
-	        const file = formData.get('file');
-	        const path = formData.get('path') || '';
-	        const useRandomName = formData.get('randomName') === 'true';
+        const requestContentType = request.headers.get('Content-Type') || '';
+        if (requestContentType.includes('multipart/form-data')) {
+            return handleMultipartWebUpload(request, bucket);
+        }
+
+        const url = new URL(request.url);
+        const originalName = url.searchParams.get('filename') || '';
+        const path = url.searchParams.get('path') || '';
+        const useRandomName = url.searchParams.get('randomName') === 'true';
+
+        if (!originalName || !request.body) {
+            return new Response(JSON.stringify({
+                success: false,
+                message: "No file provided"
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const uploadTarget = await buildUploadTarget(bucket, {
+            fileName: originalName,
+            path,
+            contentType: requestContentType,
+            useRandomName
+        });
+
+        await bucket.put(uploadTarget.key, request.body, {
+            httpMetadata: {
+                contentType: uploadTarget.contentType,
+                cacheControl: FILE_CACHE_CONTROL
+            }
+        });
+
+        const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, uploadTarget.key);
+
+        return new Response(JSON.stringify({
+            success: true,
+            url: fileUrl,
+            markdown: buildMarkdownLink(uploadTarget.fileName, fileUrl, uploadTarget.fileTypeInfo.isImage),
+            isImage: uploadTarget.fileTypeInfo.isImage,
+            key: uploadTarget.key
+        }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+    } catch (error) {
+        console.error('Upload failed:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: "File upload failed, please try again."
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+async function handleMultipartWebUpload(request, bucket) {
+    try {
+        const formData = await request.formData();
+        const file = formData.get('file');
+        const path = formData.get('path') || '';
+        const useRandomName = formData.get('randomName') === 'true';
 
         if (!file) {
             return new Response(JSON.stringify({
@@ -3560,32 +4342,25 @@ async function handleWebUpload(request, bucket) {
             });
         }
 
-        // 处理文件数据
         const fileBuffer = await file.arrayBuffer();
         const uint8Array = new Uint8Array(fileBuffer);
-
-        // 检测文件类型；图片用内容签名校准，其他文件使用浏览器提供的 MIME。
         const detectedType = detectImageType(uint8Array);
         const contentType = detectedType?.mime || file.type || 'application/octet-stream';
+        const fileName = buildStoredFileName(file.name, detectedType, contentType, useRandomName);
 
-	        const fileName = buildStoredFileName(file.name, detectedType, contentType, useRandomName);
-
-	        // 如果提供了路径，则构建完整的文件键
-	        let key = fileName;
+        let key = fileName;
         if (path) {
-            // 确保路径以斜杠结尾
             const formattedPath = path.endsWith('/') ? path : `${path}/`;
-	            key = `${formattedPath}${key}`;
-	        }
+            key = `${formattedPath}${key}`;
+        }
 
-	        if (!useRandomName) {
-	            key = await buildUniqueR2Key(bucket, key);
-	        }
+        if (!useRandomName) {
+            key = await buildUniqueR2Key(bucket, key);
+        }
 
-	        const storedFileName = key.split('/').pop() || fileName;
-	        const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
+        const storedFileName = key.split('/').pop() || fileName;
+        const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
 
-        // 上传到R2
         await bucket.put(key, fileBuffer, {
             httpMetadata: {
                 contentType,
@@ -3595,21 +4370,182 @@ async function handleWebUpload(request, bucket) {
 
         const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
 
-	        return new Response(JSON.stringify({
-	            success: true,
-	            url: fileUrl,
-	            markdown: buildMarkdownLink(storedFileName, fileUrl, fileTypeInfo.isImage),
-	            isImage: fileTypeInfo.isImage,
-	            key: key
-	        }), {
+        return new Response(JSON.stringify({
+            success: true,
+            url: fileUrl,
+            markdown: buildMarkdownLink(storedFileName, fileUrl, fileTypeInfo.isImage),
+            isImage: fileTypeInfo.isImage,
+            key
+        }), {
             headers: { 'Content-Type': 'application/json' }
         });
 
     } catch (error) {
-        console.error('Upload failed:', error);
+        console.error('Multipart upload failed:', error);
         return new Response(JSON.stringify({
             success: false,
             message: "File upload failed, please try again."
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+async function handleCreateR2MultipartUpload(request, bucket) {
+    try {
+        const body = await request.json();
+        const uploadTarget = await buildUploadTarget(bucket, {
+            fileName: body.filename || '',
+            path: body.path || '',
+            contentType: body.contentType || '',
+            useRandomName: body.randomName === true || body.randomName === 'true'
+        });
+
+        const multipartUpload = await bucket.createMultipartUpload(uploadTarget.key, {
+            httpMetadata: {
+                contentType: uploadTarget.contentType,
+                cacheControl: FILE_CACHE_CONTROL
+            }
+        });
+
+        return new Response(JSON.stringify({
+            success: true,
+            key: uploadTarget.key,
+            uploadId: multipartUpload.uploadId,
+            contentType: uploadTarget.contentType,
+            fileName: uploadTarget.fileName,
+            isImage: uploadTarget.fileTypeInfo.isImage
+        }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.error('Create multipart upload failed:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: 'Failed to create multipart upload'
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+async function handleUploadR2MultipartPart(request, bucket) {
+    try {
+        const url = new URL(request.url);
+        const key = url.searchParams.get('key') || '';
+        const uploadId = url.searchParams.get('uploadId') || '';
+        const partNumber = parseInt(url.searchParams.get('partNumber') || '', 10);
+
+        if (!key || !uploadId || !Number.isInteger(partNumber) || partNumber < 1 || !request.body) {
+            return new Response(JSON.stringify({
+                success: false,
+                message: 'Invalid multipart part request'
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const multipartUpload = bucket.resumeMultipartUpload(key, uploadId);
+        const part = await multipartUpload.uploadPart(partNumber, request.body);
+
+        return new Response(JSON.stringify({
+            success: true,
+            part
+        }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.error('Upload multipart part failed:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: 'Failed to upload multipart part'
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+async function handleCompleteR2MultipartUpload(request, bucket) {
+    try {
+        const body = await request.json();
+        const key = body.key || '';
+        const uploadId = body.uploadId || '';
+        const parts = Array.isArray(body.parts) ? body.parts : [];
+
+        if (!key || !uploadId || parts.length === 0) {
+            return new Response(JSON.stringify({
+                success: false,
+                message: 'Invalid multipart complete request'
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const multipartUpload = bucket.resumeMultipartUpload(key, uploadId);
+        const completedObject = await multipartUpload.complete(
+            parts
+                .map(part => ({ partNumber: part.partNumber, etag: part.etag }))
+                .sort((a, b) => a.partNumber - b.partNumber)
+        );
+
+        const storedFileName = key.split('/').pop() || key;
+        const contentType = resolveUploadContentType(storedFileName, body.contentType || completedObject.httpMetadata?.contentType || '');
+        const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
+        const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
+
+        return new Response(JSON.stringify({
+            success: true,
+            url: fileUrl,
+            markdown: buildMarkdownLink(storedFileName, fileUrl, fileTypeInfo.isImage),
+            isImage: fileTypeInfo.isImage,
+            key
+        }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.error('Complete multipart upload failed:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: 'Failed to complete multipart upload'
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+async function handleAbortR2MultipartUpload(request, bucket) {
+    try {
+        const body = await request.json();
+        const key = body.key || '';
+        const uploadId = body.uploadId || '';
+
+        if (!key || !uploadId) {
+            return new Response(JSON.stringify({
+                success: false,
+                message: 'Invalid multipart abort request'
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const multipartUpload = bucket.resumeMultipartUpload(key, uploadId);
+        await multipartUpload.abort();
+
+        return new Response(JSON.stringify({ success: true }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.error('Abort multipart upload failed:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: 'Failed to abort multipart upload'
         }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' }
