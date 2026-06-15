@@ -1,18 +1,18 @@
 <div align="center">
     <a href="https://github.com/WangQueXL/PixR2"><img width="15%" src="docs/screenshot/logo.png"/></a>
     <h1>PixR2</h1>
-    <p>基于 Cloudflare Workers + R2 的多入口图床与图片管理平台</p>
+    <p>基于 Cloudflare Workers + R2 的多入口文件托管与网盘管理平台</p>
 </div>
 
 
 ## 项目简介
 
-PixR2 是一个 **无服务器部署（Serverless）** 的在线图床，基于 **Cloudflare Workers** 和 **R2** 构建  
-支持 **网页端上传** 与 **Telegram Bot 上传** 两种方式，帮助你快速、安全地将图片存储到云端，并提供管理与分享功能
+PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工具，基于 **Cloudflare Workers** 和 **R2** 构建
+支持 **网页端上传** 与 **Telegram Bot 上传** 两种方式，帮助你快速、安全地将文件存储到云端，并提供管理与分享功能
 
-- 📤 支持上传 **JPG / PNG / GIF / WebP** 图片  
+- 📤 支持上传图片、文档、压缩包、音视频和其他常见文件
 - 🌐 支持网页上传与 Telegram Bot 上传双入口  
-- 🖼 支持在线预览与文件管理  
+- 🖼 支持图片在线预览与文件管理
 - 🔗 支持创建与管理分享链接，快速将指定文件夹对外分享  
 - ⚡ 使用 Cloudflare Workers 部署，无需传统服务器  
 

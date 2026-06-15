@@ -1,5 +1,21 @@
 const R2_PUBLIC_BASE_URL = 'https://box.leak.moe';
-const IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const FILE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg']);
+const MIME_EXTENSION_MAP = {
+    'application/pdf': 'pdf',
+    'application/zip': 'zip',
+    'application/x-7z-compressed': '7z',
+    'application/x-rar-compressed': 'rar',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.ms-excel': 'xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.ms-powerpoint': 'ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'text/plain': 'txt',
+    'text/csv': 'csv',
+    'application/json': 'json'
+};
 
 function buildObjectUrl(baseUrl, key) {
     return `${baseUrl.replace(/\/$/, '')}/${key.split('/').map(encodeURIComponent).join('/')}`;
@@ -308,6 +324,131 @@ function detectImageType(uint8Array) {
     return null;
 }
 
+function getFileExtension(fileName = '') {
+    const cleanName = fileName.split('?')[0].split('#')[0];
+    const lastPart = cleanName.split('/').pop() || '';
+    const dotIndex = lastPart.lastIndexOf('.');
+    if (dotIndex <= 0 || dotIndex === lastPart.length - 1) return '';
+    return lastPart.substring(dotIndex + 1).toLowerCase();
+}
+
+function stripFileExtension(fileName = '') {
+    const lastPart = fileName.split('/').pop() || '';
+    const dotIndex = lastPart.lastIndexOf('.');
+    return dotIndex > 0 ? lastPart.substring(0, dotIndex) : lastPart;
+}
+
+function getFileNameFromUrl(url = '') {
+    try {
+        const parsedUrl = new URL(url);
+        return decodeURIComponent(parsedUrl.pathname.split('/').pop() || '');
+    } catch {
+        return '';
+    }
+}
+
+function sanitizeFileName(fileName = 'file') {
+    const cleanName = fileName
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .replace(/[\\/:*?"<>|#%{}~`^]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleanName || 'file';
+}
+
+function getExtensionFromMime(mime = '') {
+    const normalizedMime = mime.toLowerCase().split(';')[0].trim();
+    if (MIME_EXTENSION_MAP[normalizedMime]) return MIME_EXTENSION_MAP[normalizedMime];
+    if (normalizedMime.startsWith('image/')) return normalizedMime.substring(6).replace('jpeg', 'jpg');
+    if (normalizedMime.startsWith('video/')) return normalizedMime.substring(6);
+    if (normalizedMime.startsWith('audio/')) return normalizedMime.substring(6);
+    if (normalizedMime.startsWith('text/')) return 'txt';
+    return '';
+}
+
+function getFileTypeInfo(fileName = '', mime = '') {
+    const extension = getFileExtension(fileName);
+    const normalizedMime = mime.toLowerCase().split(';')[0].trim();
+    const isImage = normalizedMime.startsWith('image/') || IMAGE_EXTENSIONS.has(extension);
+
+    if (isImage) {
+        return { isImage: true, category: 'image', iconClass: 'bi-file-earmark-image', label: '图片' };
+    }
+    if (extension === 'pdf' || normalizedMime === 'application/pdf') {
+        return { isImage: false, category: 'pdf', iconClass: 'bi-file-earmark-pdf', label: 'PDF' };
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(extension)) {
+        return { isImage: false, category: 'archive', iconClass: 'bi-file-earmark-zip', label: '压缩包' };
+    }
+    if (normalizedMime.startsWith('video/') || ['mp4', 'mov', 'mkv', 'avi', 'webm'].includes(extension)) {
+        return { isImage: false, category: 'video', iconClass: 'bi-file-earmark-play', label: '视频' };
+    }
+    if (normalizedMime.startsWith('audio/') || ['mp3', 'wav', 'flac', 'aac', 'ogg'].includes(extension)) {
+        return { isImage: false, category: 'audio', iconClass: 'bi-file-earmark-music', label: '音频' };
+    }
+    if (['doc', 'docx', 'pages'].includes(extension)) {
+        return { isImage: false, category: 'document', iconClass: 'bi-file-earmark-word', label: '文档' };
+    }
+    if (['xls', 'xlsx', 'csv', 'numbers'].includes(extension)) {
+        return { isImage: false, category: 'spreadsheet', iconClass: 'bi-file-earmark-spreadsheet', label: '表格' };
+    }
+    if (['ppt', 'pptx', 'key'].includes(extension)) {
+        return { isImage: false, category: 'presentation', iconClass: 'bi-file-earmark-slides', label: '演示文稿' };
+    }
+    if (['js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'md', 'py', 'go', 'rs', 'java', 'php', 'rb', 'sh'].includes(extension)) {
+        return { isImage: false, category: 'code', iconClass: 'bi-file-earmark-code', label: '代码' };
+    }
+    if (normalizedMime.startsWith('text/') || ['txt', 'log'].includes(extension)) {
+        return { isImage: false, category: 'text', iconClass: 'bi-file-earmark-text', label: '文本' };
+    }
+    return { isImage: false, category: 'file', iconClass: 'bi-file-earmark', label: extension ? extension.toUpperCase() : '文件' };
+}
+
+function buildStoredFileName(originalName, detectedType, mime = '', useRandomName = true) {
+    const date = new Date();
+    const formattedDate = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+    const shortUUID = crypto.randomUUID().split('-')[0];
+    const sourceName = sanitizeFileName(originalName || 'file');
+    const baseName = sanitizeFileName(stripFileExtension(sourceName));
+    const extension = detectedType?.ext || getFileExtension(sourceName) || getExtensionFromMime(mime) || 'bin';
+    if (!useRandomName) return `${baseName}.${extension.toLowerCase()}`;
+    return `${formattedDate}_${shortUUID}_${baseName}.${extension.toLowerCase()}`;
+}
+
+async function buildUniqueR2Key(bucket, key) {
+    if (!await bucket.head(key)) return key;
+
+    const slashIndex = key.lastIndexOf('/');
+    const prefix = slashIndex >= 0 ? key.substring(0, slashIndex + 1) : '';
+    const fileName = slashIndex >= 0 ? key.substring(slashIndex + 1) : key;
+    const dotIndex = fileName.lastIndexOf('.');
+    const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+    const extension = dotIndex > 0 ? fileName.substring(dotIndex) : '';
+
+    for (let index = 1; index <= 100; index++) {
+        const candidate = `${prefix}${baseName} (${index})${extension}`;
+        if (!await bucket.head(candidate)) return candidate;
+    }
+
+    return `${prefix}${baseName}-${crypto.randomUUID().split('-')[0]}${extension}`;
+}
+
+function buildMarkdownLink(fileName, url, isImage) {
+    const label = sanitizeFileName(fileName || 'file').replace(/[\[\]]/g, '');
+    return isImage ? `![${label}](${url})` : `[${label}](${url})`;
+}
+
+function escapeHtmlForTelegram(value = '') {
+    const htmlEscapes = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    };
+    return String(value).replace(/[&<>"']/g, char => htmlEscapes[char]);
+}
+
 /**
  * 处理来自Telegram的webhook请求
  * @param {Request} request - 传入的请求
@@ -347,15 +488,16 @@ async function handleTelegramWebhook(request, env) {
         }
 
         // 处理媒体文件上传的函数
-        async function handleMediaUpload(chatId, fileId, messageId, isDocument = false) {
+        async function handleMediaUpload(chatId, fileId, messageId, isDocument = false, originalName = '', mimeType = '') {
             try {
                 const fileUrl = await getFileUrl(fileId, env.TELEGRAM_BOT_TOKEN);
                 const userPath = await getUserPath(chatId);
-                const uploadResult = await uploadImageToR2(fileUrl, env.BUCKET_R2, isDocument, userPath);
+                const uploadResult = await uploadFileToR2(fileUrl, env.BUCKET_R2, isDocument, userPath, originalName, mimeType);
 
                 if (uploadResult.ok) {
-                    const imageUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, uploadResult.key);
-                    const messageText = `直链:\n<code>${imageUrl}</code>\nMarkdown:\n<code>![img](${imageUrl})</code>`;
+                    const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, uploadResult.key);
+                    const markdownLink = buildMarkdownLink(uploadResult.fileName, fileUrl, uploadResult.isImage);
+                    const messageText = `直链:\n<code>${escapeHtmlForTelegram(fileUrl)}</code>\nMarkdown:\n<code>${escapeHtmlForTelegram(markdownLink)}</code>`;
                     await sendMessage(chatId, messageText, `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`, {
                         parse_mode: "HTML",
                         reply_to_message_id: messageId
@@ -399,24 +541,15 @@ async function handleTelegramWebhook(request, env) {
             }
 
             // 对于其他文本消息，发送帮助信息
-            let mes = `请发送一张图片！\n或者使用以下命令：\n/modify 修改上传图片的存储路径\n/status 查看当前上传图片的路径`;
+            let mes = `请发送文件或图片！\n或者使用以下命令：\n/modify 修改上传文件的存储路径\n/status 查看当前上传路径`;
             await sendMessage(chatId, mes, `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`);
             return new Response('OK');
         }
 
-        // 处理以文件形式发送的图片
+        // 处理以文件形式发送的内容
         if (update.message.document) {
             const doc = update.message.document;
-            const fileName = doc.file_name || '';
-            const fileExt = fileName.split('.').pop().toLowerCase();
-
-            // 检查文件扩展名是否为支持的格式
-            if (!['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(fileExt)) {
-                await sendMessage(chatId, '不支持的文件类型，请发送 JPG/PNG/GIF/WEBP 格式文件', `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`);
-                return new Response('OK');
-            }
-
-            await handleMediaUpload(chatId, doc.file_id, update.message.message_id, true);
+            await handleMediaUpload(chatId, doc.file_id, update.message.message_id, true, doc.file_name || '', doc.mime_type || '');
             return new Response('OK');
         }
 
@@ -719,12 +852,12 @@ function serveUploadPage() {
                     </button>
                     <div class="collapse navbar-collapse" id="navbarNav">
                         <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-                            <li class="nav-item">
-                                <a class="nav-link active" aria-current="page" href="/upload">上传图片</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" href="/gallery">图片管理</a>
-                            </li>
+	                            <li class="nav-item">
+	                                <a class="nav-link active" aria-current="page" href="/upload">上传文件</a>
+	                            </li>
+	                            <li class="nav-item">
+	                                <a class="nav-link" href="/gallery">文件管理</a>
+	                            </li>
                         </ul>
                     </div>
                 </div>
@@ -734,22 +867,22 @@ function serveUploadPage() {
         <main class="container my-5">
             <div class="card shadow-sm">
                 <div class="card-body p-4 p-md-5">
-                    <h1 class="card-title h3 mb-4">上传图片</h1>
-                    <div class="dropzone text-center p-5 mb-3" id="dropzone">
-                        <i class="bi bi-upload fs-1 text-primary"></i>
-                        <p class="mt-3">拖拽文件到此处或点击选择文件</p>
-                        <p class="text-muted small">支持 JPG, PNG, GIF, WEBP 格式</p>
-                        <input type="file" id="fileInput" class="d-none" accept="image/jpeg,image/png,image/gif,image/webp" multiple>
+	                    <h1 class="card-title h3 mb-4">上传文件</h1>
+	                    <div class="dropzone text-center p-5 mb-3" id="dropzone">
+	                        <i class="bi bi-upload fs-1 text-primary"></i>
+	                        <p class="mt-3">拖拽文件到此处或点击选择文件</p>
+	                        <p class="text-muted small">支持图片、文档、压缩包、音视频和其他常见文件</p>
+	                        <input type="file" id="fileInput" class="d-none" multiple>
                     </div>
 
-                    <div class="mb-3">
-                        <label for="customPath" class="form-label">自定义路径（可选）</label>
-                        <input type="text" class="form-control" id="customPath" placeholder="例如: blog/images">
-                    </div>
+	                    <div class="form-check form-switch mb-3">
+	                        <input class="form-check-input" type="checkbox" role="switch" id="randomName">
+	                        <label class="form-check-label" for="randomName">使用随机文件名</label>
+	                    </div>
 
-                    <div id="selectedFiles" class="mb-3"></div>
+	                    <div id="selectedFiles" class="mb-3"></div>
 
-                    <button id="uploadBtn" class="btn btn-primary w-100" disabled>上传图片</button>
+	                    <button id="uploadBtn" class="btn btn-primary w-100" disabled>上传文件</button>
                 </div>
             </div>
         </main>
@@ -775,13 +908,24 @@ function serveUploadPage() {
                 const dropzone = document.getElementById('dropzone');
                 const fileInput = document.getElementById('fileInput');
                 const selectedFilesContainer = document.getElementById('selectedFiles');
-                const uploadBtn = document.getElementById('uploadBtn');
-                const customPath = document.getElementById('customPath');
-                const successModalEl = document.getElementById('successModal');
+	                const uploadBtn = document.getElementById('uploadBtn');
+	                const randomName = document.getElementById('randomName');
+	                const successModalEl = document.getElementById('successModal');
                 const successModal = new bootstrap.Modal(successModalEl);
                 const modalContent = document.getElementById('modalContent');
 
                 let selectedFiles = [];
+
+                function escapeHtml(value = '') {
+                    const htmlEscapes = {
+                        '&': '&amp;',
+                        '<': '&lt;',
+                        '>': '&gt;',
+                        '"': '&quot;',
+                        "'": '&#39;'
+                    };
+                    return String(value).replace(/[&<>"']/g, char => htmlEscapes[char]);
+                }
 
                 dropzone.addEventListener('click', () => fileInput.click());
                 dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('active'); });
@@ -789,12 +933,32 @@ function serveUploadPage() {
                 dropzone.addEventListener('drop', (e) => { e.preventDefault(); dropzone.classList.remove('active'); handleFiles(e.dataTransfer.files); });
                 fileInput.addEventListener('change', () => { handleFiles(fileInput.files); });
 
+                function formatFileSize(bytes) {
+                    if (bytes < 1024) return bytes + ' B';
+                    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+                    return \`\${(bytes / Math.pow(1024, i)).toFixed(2)} \${['B', 'KB', 'MB', 'GB'][i]}\`;
+                }
+
+                function getClientFileIcon(file) {
+                    const name = file.name.toLowerCase();
+                    const type = (file.type || '').toLowerCase();
+                    const ext = name.includes('.') ? name.split('.').pop() : '';
+                    if (type.startsWith('image/')) return 'bi-file-earmark-image';
+                    if (type.startsWith('video/')) return 'bi-file-earmark-play';
+                    if (type.startsWith('audio/')) return 'bi-file-earmark-music';
+                    if (ext === 'pdf') return 'bi-file-earmark-pdf';
+                    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'bi-file-earmark-zip';
+                    if (['doc', 'docx'].includes(ext)) return 'bi-file-earmark-word';
+                    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'bi-file-earmark-spreadsheet';
+                    if (['ppt', 'pptx'].includes(ext)) return 'bi-file-earmark-slides';
+                    if (['js', 'ts', 'html', 'css', 'json', 'md', 'py', 'go', 'rs', 'java', 'php', 'sh'].includes(ext)) return 'bi-file-earmark-code';
+                    if (type.startsWith('text/') || ['txt', 'log'].includes(ext)) return 'bi-file-earmark-text';
+                    return 'bi-file-earmark';
+                }
+
                 function handleFiles(files) {
-                    const validFiles = Array.from(files).filter(file => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type.toLowerCase()));
-                    if (validFiles.length === 0 && files.length > 0) {
-                        alert('只支持 JPG, PNG, GIF, WEBP 格式的图片文件');
-                        return;
-                    }
+                    const validFiles = Array.from(files).filter(file => file && file.name);
+                    if (validFiles.length === 0) return;
                     selectedFiles = [...selectedFiles, ...validFiles];
                     updateFilePreview();
                     uploadBtn.disabled = selectedFiles.length === 0;
@@ -808,11 +972,16 @@ function serveUploadPage() {
                     list.className = 'list-group';
                     selectedFiles.forEach((file, index) => {
                         const item = document.createElement('li');
-                        item.className = 'list-group-item d-flex justify-content-between align-items-center';
-                        item.innerHTML = \`
-                            <span class="text-truncate">\${file.name}</span>
-                            <button type="button" class="btn-close" aria-label="Remove" data-index="\${index}"></button>
-                        \`;
+                        const safeName = escapeHtml(file.name);
+		                        item.className = 'list-group-item d-flex justify-content-between align-items-center gap-3';
+		                        item.innerHTML = \`
+		                            <span class="d-flex align-items-center min-w-0">
+		                                <i class="bi \${getClientFileIcon(file)} me-2 text-secondary"></i>
+		                                <span class="text-truncate" title="\${safeName}">\${safeName}</span>
+		                                <small class="text-muted ms-2 flex-shrink-0">\${formatFileSize(file.size)}</small>
+		                            </span>
+		                            <button type="button" class="btn-close" aria-label="Remove" data-index="\${index}"></button>
+	                        \`;
                         list.appendChild(item);
                     });
                     selectedFilesContainer.appendChild(list);
@@ -833,19 +1002,20 @@ function serveUploadPage() {
                     uploadBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 上传中...';
 
                     const uploadPromises = selectedFiles.map(file => {
-                        const formData = new FormData();
-                        formData.append('file', file);
-                        formData.append('path', customPath.value || '');
-                        return fetch('/api/upload', { method: 'POST', body: formData })
-                            .then(response => response.ok ? response.json() : Promise.reject('上传失败'))
-                            .catch(error => ({ error: true, message: error.message, name: file.name }));
-                    });
+		                        const formData = new FormData();
+		                        formData.append('file', file);
+		                        formData.append('path', '');
+		                        formData.append('randomName', randomName.checked ? 'true' : 'false');
+		                        return fetch('/api/upload', { method: 'POST', body: formData })
+	                            .then(response => response.ok ? response.json() : Promise.reject('上传失败'))
+	                            .catch(error => ({ error: true, message: error?.message || String(error), name: file.name }));
+	                    });
 
                     const results = await Promise.all(uploadPromises);
                     displayResults(results);
 
                     uploadBtn.disabled = false;
-                    uploadBtn.textContent = '上传图片';
+	                    uploadBtn.textContent = '上传文件';
                     selectedFiles = [];
                     updateFilePreview();
                 });
@@ -855,34 +1025,38 @@ function serveUploadPage() {
                     const successfulUploads = results.filter(r => !r.error);
                     const failedUploads = results.filter(r => r.error);
 
-                    if (failedUploads.length > 0) {
-                        const errorAlert = document.createElement('div');
-                        errorAlert.className = 'alert alert-danger';
-                        errorAlert.innerHTML = \`<strong>\${failedUploads.length} 个文件上传失败:</strong> \${failedUploads.map(f => f.name).join(', ')}\`;
-                        modalContent.appendChild(errorAlert);
-                    }
+	                    if (failedUploads.length > 0) {
+	                        const errorAlert = document.createElement('div');
+	                        const failedNames = failedUploads.map(f => escapeHtml(f.name || '未知文件')).join(', ');
+	                        errorAlert.className = 'alert alert-danger';
+	                        errorAlert.innerHTML = \`<strong>\${failedUploads.length} 个文件上传失败:</strong> \${failedNames}\`;
+	                        modalContent.appendChild(errorAlert);
+	                    }
 
                     if (successfulUploads.length > 0) {
                         successfulUploads.forEach(result => {
                             const linkItem = document.createElement('div');
+                            const safeKey = escapeHtml(result.key || '');
+                            const safeUrl = escapeHtml(result.url || '');
+                            const safeMarkdown = escapeHtml(result.markdown || '');
                             linkItem.className = 'card mb-3';
                             linkItem.innerHTML = \`
-                                <div class="card-header">\${result.key}</div>
+                                <div class="card-header">\${safeKey}</div>
                                 <div class="card-body">
                                     <div class="mb-2">
                                         <label class="form-label small">直接链接</label>
                                         <div class="input-group">
-                                            <input type="text" class="form-control form-control-sm" value="\${result.url}" readonly>
-                                            <button class="btn btn-outline-secondary btn-sm copy-btn" data-text="\${result.url}">复制</button>
+                                            <input type="text" class="form-control form-control-sm" value="\${safeUrl}" readonly>
+                                            <button class="btn btn-outline-secondary btn-sm copy-btn" data-text="\${safeUrl}">复制</button>
                                         </div>
                                     </div>
                                     <div>
-                                        <label class="form-label small">Markdown</label>
-                                        <div class="input-group">
-                                            <input type="text" class="form-control form-control-sm" value="![img](\${result.url})" readonly>
-                                            <button class="btn btn-outline-secondary btn-sm copy-btn" data-text="![img](\${result.url})">复制</button>
-                                        </div>
-                                    </div>
+		                                        <label class="form-label small">Markdown</label>
+		                                        <div class="input-group">
+		                                            <input type="text" class="form-control form-control-sm" value="\${safeMarkdown}" readonly>
+		                                            <button class="btn btn-outline-secondary btn-sm copy-btn" data-text="\${safeMarkdown}">复制</button>
+		                                        </div>
+	                                    </div>
                                 </div>
                             \`;
                             modalContent.appendChild(linkItem);
@@ -940,57 +1114,115 @@ function serveGalleryPage() {
         .breadcrumb a:hover {
             transform: translateY(-1px);
         }
-        .gallery .item {
-            animation: pixr2-fade-up 220ms var(--pixr2-ease) both;
-        }
-        .gallery .item .card {
-            cursor: pointer;
-            overflow: hidden;
-            transition:
-                border-color var(--pixr2-normal) var(--pixr2-ease),
-                box-shadow var(--pixr2-normal) var(--pixr2-ease),
+	        .gallery .item {
+	            animation: pixr2-fade-up 220ms var(--pixr2-ease) both;
+	        }
+	        .gallery .item .card {
+	            cursor: pointer;
+	            overflow: hidden;
+	            display: flex;
+	            flex-direction: column;
+	            transition:
+	                border-color var(--pixr2-normal) var(--pixr2-ease),
+	                box-shadow var(--pixr2-normal) var(--pixr2-ease),
                 transform var(--pixr2-normal) var(--pixr2-ease);
         }
-        .gallery .item .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
-        }
-        .gallery .item .file-image {
+	        .gallery .item .card:hover {
+	            transform: translateY(-4px);
+	            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
+	        }
+	        .file-visual-shell {
+	            position: relative;
+	            width: 100%;
+	            aspect-ratio: 4 / 3;
+	            overflow: hidden;
+	            flex: 0 0 auto;
+	        }
+	        .gallery .item .file-image-shell {
+	            background: #f1f5f9;
+	        }
+	        .gallery .item .file-image-shell.loaded {
+	            background: #f8f9fa;
+	        }
+	        .gallery .item .file-image {
+            display: block;
             width: 100%;
-            aspect-ratio: 1 / 1;
-            object-fit: cover;
-            background:
-                linear-gradient(90deg, rgba(226, 232, 240, 0.85), rgba(248, 249, 250, 0.96), rgba(226, 232, 240, 0.85));
-            background-size: 200% 100%;
-            animation: pixr2-image-shimmer 1.1s ease-in-out infinite;
-            opacity: .55;
-            transform: scale(1.015);
-            transition:
-                opacity var(--pixr2-normal) var(--pixr2-ease),
-                filter var(--pixr2-normal) var(--pixr2-ease),
-                transform var(--pixr2-normal) var(--pixr2-ease);
-        }
-        .gallery .item .file-image.loaded {
+	            height: 100%;
+	            object-fit: cover;
+	            opacity: 0;
+	            transform: scale(1.01);
+	            transition:
+	                opacity var(--pixr2-normal) var(--pixr2-ease),
+	                transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .gallery .item .file-image.loaded {
             animation: none;
-            background: #f8f9fa;
             opacity: 1;
             transform: scale(1);
         }
-        @keyframes pixr2-image-shimmer {
-            from { background-position: 200% 0; }
-            to { background-position: -200% 0; }
-        }
-        .gallery .item .card:hover .file-image {
-            filter: saturate(1.04);
-            transform: scale(1.035);
-        }
-        .gallery .item .checkbox {
+        .image-loading-indicator {
             position: absolute;
-            top: 0.5rem;
-            left: 0.5rem;
-            z-index: 10;
-            background-color: #fff;
-            transition:
+            inset: 0;
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            background-color: rgba(248, 249, 250, 0.72);
+	            opacity: 1;
+	            transform: scale(1);
+	            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease),
+                visibility var(--pixr2-normal) var(--pixr2-ease);
+            pointer-events: none;
+        }
+        .image-loading-indicator .spinner-border {
+            width: 1.75rem;
+            height: 1.75rem;
+        }
+        .file-image-shell.loaded .image-loading-indicator {
+            opacity: 0;
+	            transform: scale(0.94);
+	            visibility: hidden;
+	        }
+	        .gallery .item .card:hover .file-image {
+	            transform: scale(1.025);
+	        }
+	        .file-icon-shell {
+	            display: flex;
+	            flex-direction: column;
+	            align-items: center;
+            justify-content: center;
+            gap: .5rem;
+	            background: linear-gradient(180deg, #f8f9fa 0%, #eef2f7 100%);
+	            color: #6c757d;
+	        }
+	        .directory-shell {
+	            background: linear-gradient(180deg, #fff8df 0%, #fff2b8 100%);
+	            color: #ffc107;
+	        }
+	        .file-icon-shell .file-type-icon {
+	            font-size: clamp(2.75rem, 8vw, 4.25rem);
+	            line-height: 1;
+	        }
+	        .file-icon-shell .file-type-label {
+            max-width: 80%;
+            font-size: .75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .gallery .item .card:hover .file-type-icon {
+            transform: scale(1.04);
+        }
+	        .file-type-icon {
+	            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .gallery .item .checkbox {
+	            position: absolute;
+	            top: 0.5rem;
+	            right: 0.5rem;
+	            z-index: 10;
+	            background-color: #fff;
+	            transition:
                 box-shadow var(--pixr2-fast) var(--pixr2-ease),
                 transform var(--pixr2-fast) var(--pixr2-ease);
         }
@@ -999,28 +1231,214 @@ function serveGalleryPage() {
             box-shadow: 0 0 0 .2rem rgba(13, 110, 253, 0.16)!important;
             transform: translateY(-2px);
         }
-        .gallery .item.selected .checkbox {
-            transform: scale(1.05);
-        }
-        .directory-icon {
-            font-size: 4rem;
-            color: #ffc107;
-            transition: transform var(--pixr2-normal) var(--pixr2-ease);
-        }
-        .gallery .item .card:hover .directory-icon {
-            transform: scale(1.04);
-        }
-        .toast-container {
-            z-index: 1100;
-        }
+	        .gallery .item.selected .checkbox {
+	            transform: scale(1.05);
+	        }
+	        .file-card-footer {
+	            flex: 1 0 auto;
+	            min-height: 4.6rem;
+	            display: flex;
+	            align-items: center;
+	            padding: .65rem .75rem;
+	        }
+	        .file-meta {
+	            min-width: 0;
+	        }
+	        .file-name {
+	            color: #212529;
+	            font-size: .95rem;
+	            font-weight: 500;
+	            line-height: 1.25;
+	        }
+	        .file-subtitle {
+	            color: #6c757d;
+	            font-size: .82rem;
+	            line-height: 1.3;
+	        }
+	        .file-actions .btn {
+	            width: 2.15rem;
+	            height: 2.15rem;
+	            display: inline-flex;
+	            align-items: center;
+	            justify-content: center;
+	            padding: 0;
+	        }
+	        .gallery-placeholder .card {
+	            cursor: default;
+	            pointer-events: none;
+	        }
+	        .gallery .gallery-placeholder .card:hover {
+	            transform: none;
+	            box-shadow: none!important;
+	        }
+	        .skeleton-block,
+	        .skeleton-line {
+	            background-color: #eef2f7;
+	            animation: pixr2-skeleton-pulse 850ms ease-in-out infinite alternate;
+	        }
+	        .skeleton-line {
+	            display: block;
+	            height: .82rem;
+	            border-radius: 999px;
+	            margin-bottom: .55rem;
+	        }
+	        .skeleton-line-name {
+	            width: 78%;
+	        }
+	        .skeleton-line-size {
+	            width: 42%;
+	            height: .72rem;
+	            margin-bottom: 0;
+	        }
+	        @keyframes pixr2-skeleton-pulse {
+	            from { opacity: .48; }
+	            to { opacity: 1; }
+	        }
+	        .gallery {
+	            --pixr2-card-media: 9.25rem;
+	            --pixr2-card-footer: 4.85rem;
+	            display: grid;
+	            grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+	            gap: 1rem;
+	            align-items: start;
+	            transition: opacity var(--pixr2-fast) var(--pixr2-ease);
+	        }
+	        .gallery.is-refreshing {
+	            opacity: .78;
+	            pointer-events: none;
+	        }
+	        .gallery .item .card {
+	            flex-direction: column;
+	            height: calc(var(--pixr2-card-media) + var(--pixr2-card-footer));
+	            min-height: 0;
+	            overflow: hidden;
+	        }
+	        .gallery .item .card:hover {
+	            transform: translateY(-3px);
+	        }
+	        .file-visual-shell {
+	            width: 100%;
+	            min-width: 0;
+	            height: var(--pixr2-card-media);
+	            aspect-ratio: auto;
+	            border-right: 0;
+	            border-bottom: 1px solid rgba(0, 0, 0, .08);
+	        }
+	        .gallery .item .file-image {
+	            position: absolute;
+	            inset: 0;
+	        }
+	        .file-icon-shell {
+	            gap: .3rem;
+	        }
+	        .directory-shell {
+	            background: linear-gradient(135deg, #fff8db 0%, #ffeaa7 100%);
+	        }
+	        .file-icon-shell .file-type-icon {
+	            font-size: 4.35rem;
+	        }
+	        .file-icon-shell .file-type-label {
+	            font-size: .72rem;
+	        }
+	        .file-card-footer {
+	            flex: 0 0 var(--pixr2-card-footer);
+	            min-width: 0;
+	            height: var(--pixr2-card-footer);
+	            min-height: var(--pixr2-card-footer);
+	            border-top: 0;
+	            padding: .75rem .85rem;
+	            background-color: #fff;
+	        }
+	        .file-name {
+	            font-size: .98rem;
+	            font-weight: 600;
+	        }
+	        .file-subtitle {
+	            font-size: .84rem;
+	        }
+	        .file-actions .btn {
+	            width: 2.1rem;
+	            height: 2.1rem;
+	        }
+	        .gallery .item .item-checkbox {
+	            position: absolute !important;
+	            top: .6rem !important;
+	            right: .6rem !important;
+	            width: 1.55rem;
+	            height: 1.55rem;
+	            margin: 0 !important;
+	            opacity: 0;
+	            z-index: 40;
+	            cursor: pointer;
+	        }
+	        .selection-mark {
+	            position: absolute;
+	            top: .6rem;
+	            right: .6rem;
+	            width: 1.55rem;
+	            height: 1.55rem;
+	            display: inline-flex;
+	            align-items: center;
+	            justify-content: center;
+	            border: 2px solid #6c757d;
+	            border-radius: .45rem;
+	            background: rgba(255, 255, 255, .96);
+	            color: #fff;
+	            box-shadow: 0 .25rem .65rem rgba(15, 23, 42, .18);
+	            z-index: 35;
+	            pointer-events: none;
+	            transition:
+	                background-color var(--pixr2-fast) var(--pixr2-ease),
+	                border-color var(--pixr2-fast) var(--pixr2-ease),
+	                transform var(--pixr2-fast) var(--pixr2-ease);
+	        }
+	        .selection-mark i {
+	            font-size: 1rem;
+	            line-height: 1;
+	            opacity: 0;
+	            transition: opacity var(--pixr2-fast) var(--pixr2-ease);
+	        }
+	        .item-checkbox:checked + .selection-mark {
+	            border-color: var(--bs-primary);
+	            background: var(--bs-primary);
+	            transform: scale(1.03);
+	        }
+	        .item-checkbox:checked + .selection-mark i {
+	            opacity: 1;
+	        }
+	        .gallery .item.selected .card {
+	            border-color: var(--bs-primary);
+	            background-color: rgba(13, 110, 253, .04);
+	            box-shadow: 0 0 0 .18rem rgba(13, 110, 253, .18)!important;
+	        }
+	        .gallery .item.selected .file-card-footer {
+	            background-color: rgba(13, 110, 253, .035);
+	        }
+	        @media (max-width: 575.98px) {
+	            .gallery {
+	                --pixr2-card-media: 7.5rem;
+	                --pixr2-card-footer: 4.6rem;
+	                grid-template-columns: repeat(auto-fill, minmax(9.75rem, 1fr));
+	                gap: .75rem;
+	            }
+	            .file-actions .btn {
+	                width: 1.9rem;
+	                height: 1.9rem;
+	            }
+	            .file-icon-shell .file-type-icon {
+	                font-size: 3.6rem;
+	            }
+	        }
+	        .toast-container {
+	            z-index: 1100;
+	        }
         .image-preview-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(248, 249, 250, 0.78);
-            backdrop-filter: blur(16px);
+	            background-color: rgba(248, 249, 250, 0.88);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -1082,8 +1500,7 @@ function serveGalleryPage() {
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(248, 249, 250, 0.62);
-            backdrop-filter: blur(8px);
+	            background-color: rgba(248, 249, 250, 0.78);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -1135,8 +1552,8 @@ function serveGalleryPage() {
           <!-- 按钮区 -->
           <div class="collapse navbar-collapse justify-content-end" id="navbarButtons">
             <div class="d-flex flex-lg-row flex-column align-items-lg-center pt-2 pt-lg-0">
-                <a href="/upload" class="btn btn-primary me-lg-2 mb-2 mb-lg-0">
-                    <i class="bi bi-upload me-1"></i>上传图片
+	                <a href="/upload" class="btn btn-primary me-lg-2 mb-2 mb-lg-0">
+	                    <i class="bi bi-upload me-1"></i>上传文件
                 </a>
                 <button id="newFolderBtn" class="btn btn-outline-secondary me-lg-2 mb-2 mb-lg-0">
                     <i class="bi bi-folder-plus me-1"></i>新建文件夹
@@ -1184,7 +1601,7 @@ function serveGalleryPage() {
                     </div>
                 </div>
 
-                <div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3" id="gallery">
+                <div class="gallery" id="gallery">
                 </div>
 
                 <nav id="paginationContainer" class="mt-4" aria-label="Page navigation">
@@ -1308,12 +1725,29 @@ function serveGalleryPage() {
             let selectedItems = [];
             let currentPage = 1;
             let loadingTimer = null;
+            let loadingHideTimer = null;
+            let loadingRequests = 0;
             let loadingStart = 0;
             let currentImageList = [];
             let currentImageIndex = -1;
-            let previewCloseTimer = null;
-            let previewRequestId = 0;
-            const imageCache = new Map();
+	            let previewCloseTimer = null;
+	            let previewRequestId = 0;
+	            const imageCache = new Map();
+	            const loadedImageUrls = new Set();
+		            const galleryCache = new Map();
+		            let hasRenderedGallery = false;
+		            let galleryRequestId = 0;
+
+            function escapeHtml(value = '') {
+                const htmlEscapes = {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                };
+                return String(value).replace(/[&<>"']/g, char => htmlEscapes[char]);
+            }
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -1340,32 +1774,78 @@ function serveGalleryPage() {
             const urlParams = new URLSearchParams(window.location.search);
             currentPage = parseInt(urlParams.get('page')) || 1;
 
-            async function apiCall(endpoint, options = {}) {
-                showLoading(true);
-                try {
-                    const response = await fetch(endpoint, options);
-                    if (!response.ok) throw new Error('网络响应失败');
+	            async function apiCall(endpoint, options = {}, useGlobalLoading = true) {
+	                if (useGlobalLoading) showLoading(true);
+	                try {
+	                    const response = await fetch(endpoint, options);
+	                    if (!response.ok) throw new Error('网络响应失败');
                     return await response.json();
                 } catch (error) {
-                    showNotification('操作失败: ' + error.message, 'danger');
-                    return { success: false, error };
-                } finally {
-                    showLoading(false);
-                }
-            }
+	                    showNotification('操作失败: ' + error.message, 'danger');
+	                    return { success: false, error };
+	                } finally {
+	                    if (useGlobalLoading) showLoading(false);
+	                }
+	            }
 
-            async function loadGallery() {
-                const data = await apiCall(\`/api/list?prefix=\${encodeURIComponent(currentPath)}&page=\${currentPage}\`);
-                if (data && data.success) {
-                    updateBreadcrumb();
-                    renderGallery(data.directories, data.files);
-                    renderPagination(data.pagination);
-                    selectedItems = [];
-                    updateControls();
-                }
-            }
+	            async function loadGallery({ force = false } = {}) {
+	                const cacheKey = \`\${currentPath}|\${currentPage}\`;
+	                const cachedData = !force ? galleryCache.get(cacheKey) : null;
+	                const requestId = ++galleryRequestId;
 
-            function updateBreadcrumb() {
+	                if (cachedData) {
+	                    applyGalleryData(cachedData);
+	                } else if (!hasRenderedGallery) {
+	                    renderGalleryLoading();
+	                } else {
+	                    galleryEl.classList.add('is-refreshing');
+	                }
+
+	                const data = await apiCall(\`/api/list?prefix=\${encodeURIComponent(currentPath)}&page=\${currentPage}\`, {}, false);
+	                if (requestId !== galleryRequestId) return;
+	                galleryEl.classList.remove('is-refreshing');
+
+	                if (data && data.success) {
+	                    galleryCache.set(cacheKey, data);
+	                    if (!cachedData || JSON.stringify(cachedData) !== JSON.stringify(data)) {
+	                        applyGalleryData(data);
+	                    }
+	                } else if (!cachedData) {
+	                    galleryEl.innerHTML = '<div class="col"><p class="text-danger">加载失败，请稍后再试。</p></div>';
+	                }
+	            }
+
+	            function applyGalleryData(data) {
+	                updateBreadcrumb();
+	                renderGallery(data.directories, data.files);
+	                renderPagination(data.pagination);
+	                selectedItems = [];
+	                hasRenderedGallery = true;
+	                updateControls();
+	            }
+
+	            function refreshGallery() {
+	                galleryCache.clear();
+	                loadGallery({ force: true });
+	            }
+
+	            function renderGalleryLoading(count = 8) {
+	                galleryEl.innerHTML = Array.from({ length: count }, (_, index) => \`
+	                    <div class="col item gallery-placeholder" aria-hidden="true" style="animation-delay: \${index * 18}ms">
+	                        <div class="card h-100">
+	                            <div class="file-visual-shell skeleton-block"></div>
+	                            <div class="card-footer file-card-footer text-body-secondary small">
+	                                <div class="file-meta w-100">
+	                                    <span class="skeleton-line skeleton-line-name"></span>
+	                                    <span class="skeleton-line skeleton-line-size"></span>
+	                                </div>
+	                            </div>
+	                        </div>
+	                    </div>
+	                \`).join('');
+	            }
+
+	            function updateBreadcrumb() {
                 breadcrumbEl.innerHTML = '<ol class="breadcrumb mb-0"></ol>';
                 const ol = breadcrumbEl.querySelector('ol');
                 let path = '';
@@ -1377,18 +1857,18 @@ function serveGalleryPage() {
                 if (currentPath) {
                     const parts = currentPath.replace(/\\/$/, '').split('/');
                     parts.forEach((part, index) => {
-                        if(!part) return;
-                        path += part + '/';
-                        const item = document.createElement('li');
-                        item.className = 'breadcrumb-item';
-                        item.innerHTML = \`<a href="#" data-path="\${path}">\${part}</a>\`;
-                        ol.appendChild(item);
-                    });
-                }
-                ol.lastChild.classList.add('active');
-                ol.lastChild.setAttribute('aria-current', 'page');
-                ol.lastChild.innerHTML = ol.lastChild.textContent;
-            }
+	                        if(!part) return;
+	                        path += part + '/';
+	                        const item = document.createElement('li');
+	                        item.className = 'breadcrumb-item';
+	                        item.innerHTML = \`<a href="#" data-path="\${escapeHtml(path)}">\${escapeHtml(part)}</a>\`;
+	                        ol.appendChild(item);
+	                    });
+	                }
+	                ol.lastChild.classList.add('active');
+	                ol.lastChild.setAttribute('aria-current', 'page');
+	                ol.lastChild.textContent = ol.lastChild.textContent;
+	            }
 
             breadcrumbEl.addEventListener('click', e => {
                 if (e.target.tagName === 'A' && e.target.dataset.path !== undefined) {
@@ -1398,14 +1878,14 @@ function serveGalleryPage() {
                     const url = new URL(window.location);
                     url.searchParams.delete('page');
                     window.history.pushState({}, '', url);
-                    loadGallery();
+	                    loadGallery();
                 }
             });
 
             function renderGallery(directories, files) {
                 galleryEl.innerHTML = '';
                 currentImageList = files
-                    .filter(file => file.name !== '.null')
+                    .filter(file => file.name !== '.null' && file.isImage)
                     .map(file => file.url);
 
                 const items = [
@@ -1419,43 +1899,71 @@ function serveGalleryPage() {
                     return;
                 }
 
-                items.forEach(item => {
-                    const col = document.createElement('div');
-                    col.className = 'col item';
-                    if (item.isDir) {
-                        col.dataset.itemType = 'directory';
-                        col.dataset.path = item.path;
-                        col.innerHTML = \`
-                            <div class="card text-center h-100 position-relative" data-path="\${item.path}">
-                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
-                                <div class="card-body d-flex flex-column justify-content-center align-items-center">
-                                    <i class="bi bi-folder-fill directory-icon"></i>
-                                    <p class="card-text text-truncate mt-2" title="\${item.name}">\${item.name}</p>
-                                </div>
-                            </div>
-                        \`;
-                    } else { // isFile
+	                items.forEach(item => {
+	                    const col = document.createElement('div');
+	                    col.className = 'col item';
+	                    const safeName = escapeHtml(item.name || '');
+	                    const safePath = escapeHtml(item.path || '');
+	                    const safeUrl = escapeHtml(item.url || '');
+	                    const safeDirectUrl = escapeHtml(item.directUrl || item.url || '');
+	                    const safeIconClass = escapeHtml(item.iconClass || 'bi-file-earmark');
+	                    const safeLabel = escapeHtml(item.label || '文件');
+	                    const imageAlreadyLoaded = item.isImage && loadedImageUrls.has(item.url);
+		                    if (item.isDir) {
+		                        col.dataset.itemType = 'directory';
+		                        col.dataset.path = item.path;
+		                        col.innerHTML = \`
+		                            <div class="card h-100 position-relative" data-path="\${safePath}">
+		                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
+		                                <span class="selection-mark" aria-hidden="true"><i class="bi bi-check2"></i></span>
+		                                <div class="file-visual-shell file-icon-shell directory-shell">
+		                                    <i class="bi bi-folder-fill file-type-icon"></i>
+		                                </div>
+		                                <div class="card-footer file-card-footer text-body-secondary small">
+		                                    <div class="file-meta w-100">
+		                                        <p class="card-text file-name text-truncate mb-1" title="\${safeName}">\${safeName}</p>
+		                                        <p class="card-text file-subtitle mb-0">文件夹</p>
+		                                    </div>
+		                                </div>
+		                            </div>
+		                        \`;
+	                    } else { // isFile
                        col.dataset.key = item.key;
                        col.dataset.itemType = 'file';
                        col.innerHTML = \`
                            <div class="card h-100 position-relative">
                                <input type="checkbox" class="form-check-input checkbox item-checkbox position-absolute top-0 end-0 m-2">
-                               \${item.name === '.null' 
-                                   ? '<div class="card-body text-center d-flex flex-column justify-content-center align-items-center"><i class="bi bi-file-earmark-binary fs-1"></i></div>'
-                                  : \`<img data-src="\${item.url}" class="card-img-top file-image w-100 h-100 object-fit-cover lazyload" alt="\${item.name}" loading="lazy">\`
-                               }
-                               <div class="card-footer text-body-secondary small">
-                                   <div class="d-flex justify-content-between align-items-center">
-                                       <div class="flex-grow-1 text-truncate me-2">
-                                           <p class="card-text text-truncate mb-0" title="\${item.name}">\${item.name}</p>
-                                           <p class="card-text mb-0"><small>\${formatFileSize(item.size)}</small></p>
-                                       </div>
-                                       \${item.name !== '.null' ? \`
-                                           <div class="btn-group flex-shrink-0">
-                                               <button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${item.url}" title="预览"><i class="bi bi-eye"></i></button>
-                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${item.directUrl || item.url}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
-                                           </div>
-                                       \` : ''}
+                               <span class="selection-mark" aria-hidden="true"><i class="bi bi-check2"></i></span>
+	                               \${item.name === '.null'
+	                                   ? '<div class="card-body text-center d-flex flex-column justify-content-center align-items-center"><i class="bi bi-file-earmark-binary fs-1"></i></div>'
+		                                   : item.isImage
+		                                       ? \`
+		                                           <div class="file-visual-shell file-image-shell\${imageAlreadyLoaded ? ' loaded' : ''}">
+		                                               <img \${imageAlreadyLoaded ? \`src="\${safeUrl}"\` : \`data-src="\${safeUrl}"\`} class="card-img-top file-image\${imageAlreadyLoaded ? ' loaded' : ' lazyload'}" alt="\${safeName}" loading="\${imageAlreadyLoaded ? 'eager' : 'lazy'}">
+		                                               <div class="image-loading-indicator">
+		                                                   <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+		                                               </div>
+		                                           </div>
+		                                       \`
+		                                       : \`
+		                                           <div class="file-visual-shell file-icon-shell">
+		                                               <i class="bi \${safeIconClass} file-type-icon"></i>
+		                                               <span class="file-type-label text-truncate">\${safeLabel}</span>
+		                                           </div>
+		                                       \`
+		                               }
+	                               <div class="card-footer file-card-footer text-body-secondary small">
+		                                   <div class="d-flex justify-content-between align-items-center w-100 gap-2">
+		                                       <div class="file-meta flex-grow-1">
+		                                           <p class="card-text file-name text-truncate mb-1" title="\${safeName}">\${safeName}</p>
+		                                           <p class="card-text file-subtitle mb-0">\${formatFileSize(item.size)}</p>
+		                                       </div>
+		                                       \${item.name !== '.null' ? \`
+		                                           <div class="btn-group flex-shrink-0 file-actions">
+		                                               \${item.isImage ? \`<button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${safeUrl}" title="预览"><i class="bi bi-eye"></i></button>\` : ''}
+		                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${safeDirectUrl}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
+		                                           </div>
+		                                       \` : ''}
                                    </div>
                                </div>
                            </div>
@@ -1490,22 +1998,52 @@ function serveGalleryPage() {
                 const promise = new Promise(resolve => {
                     const image = new Image();
                     image.decoding = 'async';
-                    image.onload = () => resolve(url);
-                    image.onerror = () => resolve(url);
+                    const done = () => {
+                        loadedImageUrls.add(url);
+                        resolve(url);
+                    };
+                    image.onload = done;
+                    image.onerror = done;
                     image.src = url;
                 });
                 imageCache.set(url, promise);
                 return promise;
             }
 
-            function loadGalleryImage(image) {
-                const src = image.dataset.src;
-                preloadImage(src).then(() => {
-                    image.src = src;
-                    image.classList.remove('lazyload');
-                    requestAnimationFrame(() => image.classList.add('loaded'));
-                });
-            }
+	            function loadGalleryImage(image) {
+	                const src = image.dataset.src;
+	                if (!src || image.dataset.loading === 'true') return;
+	                image.dataset.loading = 'true';
+
+	                const shell = image.closest('.file-image-shell');
+	                const markLoaded = () => requestAnimationFrame(() => {
+	                    loadedImageUrls.add(src);
+	                    image.classList.add('loaded');
+	                    if (shell) shell.classList.add('loaded');
+	                });
+
+	                let loadPromise = imageCache.get(src);
+	                if (!loadPromise) {
+	                    loadPromise = new Promise(resolve => {
+	                        const done = () => {
+	                            image.onload = null;
+	                            image.onerror = null;
+	                            loadedImageUrls.add(src);
+	                            resolve(src);
+	                        };
+	                        image.onload = done;
+	                        image.onerror = done;
+	                        image.src = src;
+	                        if (image.complete) done();
+	                    });
+	                    imageCache.set(src, loadPromise);
+	                } else {
+	                    image.src = src;
+	                }
+
+	                image.classList.remove('lazyload');
+	                loadPromise.then(markLoaded);
+	            }
 
             function preloadAdjacentImages() {
                 [currentImageIndex - 1, currentImageIndex + 1].forEach(index => {
@@ -1539,7 +2077,7 @@ function serveGalleryPage() {
                 writeToClipboard(url).then(() => {
                     button.className = 'btn btn-sm btn-success copy-direct-url-btn';
                     button.innerHTML = '<i class="bi bi-check2"></i>';
-                    showNotification('图片直链已复制', 'success');
+                    showNotification('文件直链已复制', 'success');
                     setTimeout(() => {
                         button.className = originalClassName;
                         button.innerHTML = originalHtml;
@@ -1604,7 +2142,7 @@ function serveGalleryPage() {
                 if (dirCard) {
                     currentPath = dirCard.dataset.path;
                     currentPage = 1;
-                    loadGallery();
+	                    loadGallery();
                     return;
                 }
 
@@ -1625,6 +2163,7 @@ function serveGalleryPage() {
 
                     const isSelectableTarget = e.target.classList.contains('checkbox') ||
                                                e.target.classList.contains('file-image') ||
+                                               e.target.closest('.file-icon-shell') ||
                                                e.target.classList.contains('bi-file-earmark-binary') ||
                                                e.target.closest('.card-footer');
 
@@ -1661,7 +2200,7 @@ function serveGalleryPage() {
                         const url = new URL(window.location);
                         url.searchParams.set('page', currentPage);
                         window.history.pushState({}, '', url);
-                        loadGallery();
+	                        loadGallery();
                     }
                 }
             });
@@ -1706,7 +2245,7 @@ function serveGalleryPage() {
                     folderModal.hide();
                     document.getElementById('folderName').value = '';
                     showNotification('文件夹创建成功', 'success');
-                    loadGallery();
+	                    refreshGallery();
                 }
             });
 
@@ -1722,7 +2261,7 @@ function serveGalleryPage() {
                 });
                 if (result.success) {
                     showNotification('删除成功', 'success');
-                    loadGallery();
+	                    refreshGallery();
                 }
             });
 
@@ -1927,7 +2466,7 @@ function serveGalleryPage() {
 
                 if (result.success) {
                     showNotification(result.message, 'success');
-                    loadGallery();
+	                    refreshGallery();
                 }
                 moveCopyModal.hide();
             });
@@ -1937,20 +2476,31 @@ function serveGalleryPage() {
                 const MIN_TIME = 350; // ms minimum display time for loader
 
                 if (show) {
-                    clearTimeout(loadingTimer); // Clear any pending hide timers
+                    loadingRequests += 1;
+                    clearTimeout(loadingHideTimer);
+                    if (loadingOverlay.classList.contains('show') || loadingTimer) return;
+
                     loadingTimer = setTimeout(() => {
                         loadingOverlay.classList.add('show');
                         loadingStart = Date.now();
+                        loadingTimer = null;
                     }, DELAY);
                 } else {
+                    loadingRequests = Math.max(0, loadingRequests - 1);
+                    if (loadingRequests > 0) return;
+
                     clearTimeout(loadingTimer); // Cancel showing the loader if it hasn't appeared yet
+                    loadingTimer = null;
+                    clearTimeout(loadingHideTimer);
+
                     if (loadingStart > 0) { // If the loader was shown
                         const elapsed = Date.now() - loadingStart;
                         const remaining = MIN_TIME - elapsed;
                         if (remaining > 0) {
-                            setTimeout(() => {
+                            loadingHideTimer = setTimeout(() => {
                                 loadingOverlay.classList.remove('show');
                                 loadingStart = 0;
+                                loadingHideTimer = null;
                             }, remaining);
                         } else {
                             loadingOverlay.classList.remove('show');
@@ -2093,62 +2643,252 @@ function serveSharePage(shareId) {
         .gallery .item {
             animation: pixr2-fade-up 220ms var(--pixr2-ease) both;
         }
-        .gallery .item .card {
-            cursor: pointer;
-            overflow: hidden;
-            transition:
-                box-shadow var(--pixr2-normal) var(--pixr2-ease),
-                transform var(--pixr2-normal) var(--pixr2-ease);
+	        .gallery .item .card {
+	            cursor: pointer;
+	            overflow: hidden;
+	            display: flex;
+	            flex-direction: column;
+	            transition:
+	                box-shadow var(--pixr2-normal) var(--pixr2-ease),
+	                transform var(--pixr2-normal) var(--pixr2-ease);
         }
-        .gallery .item .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
-        }
-        .gallery .item .file-image {
+	        .gallery .item .card:hover {
+	            transform: translateY(-4px);
+	            box-shadow: 0 .75rem 1.5rem rgba(0,0,0,.16)!important;
+	        }
+	        .file-visual-shell {
+	            position: relative;
+	            width: 100%;
+	            aspect-ratio: 4 / 3;
+	            overflow: hidden;
+	            flex: 0 0 auto;
+	        }
+	        .gallery .item .file-image-shell {
+	            background: #f1f5f9;
+	        }
+	        .gallery .item .file-image-shell.loaded {
+	            background: #f8f9fa;
+	        }
+	        .gallery .item .file-image {
+            display: block;
             width: 100%;
-            aspect-ratio: 1 / 1;
-            object-fit: cover;
-            background:
-                linear-gradient(90deg, rgba(226, 232, 240, 0.85), rgba(248, 249, 250, 0.96), rgba(226, 232, 240, 0.85));
-            background-size: 200% 100%;
-            animation: pixr2-image-shimmer 1.1s ease-in-out infinite;
-            opacity: .55;
-            transform: scale(1.015);
-            transition:
-                opacity var(--pixr2-normal) var(--pixr2-ease),
-                filter var(--pixr2-normal) var(--pixr2-ease),
-                transform var(--pixr2-normal) var(--pixr2-ease);
-        }
-        .gallery .item .file-image.loaded {
+	            height: 100%;
+	            object-fit: cover;
+	            opacity: 0;
+	            transform: scale(1.01);
+	            transition:
+	                opacity var(--pixr2-normal) var(--pixr2-ease),
+	                transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .gallery .item .file-image.loaded {
             animation: none;
-            background: #f8f9fa;
             opacity: 1;
             transform: scale(1);
         }
-        @keyframes pixr2-image-shimmer {
-            from { background-position: 200% 0; }
-            to { background-position: -200% 0; }
+        .image-loading-indicator {
+            position: absolute;
+            inset: 0;
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            background-color: rgba(248, 249, 250, 0.72);
+	            opacity: 1;
+	            transform: scale(1);
+	            transition:
+                opacity var(--pixr2-normal) var(--pixr2-ease),
+                transform var(--pixr2-normal) var(--pixr2-ease),
+                visibility var(--pixr2-normal) var(--pixr2-ease);
+            pointer-events: none;
         }
-        .gallery .item .card:hover .file-image {
-            filter: saturate(1.04);
-            transform: scale(1.035);
+        .image-loading-indicator .spinner-border {
+            width: 1.75rem;
+            height: 1.75rem;
         }
-        .directory-icon {
-            font-size: 4rem;
-            color: #ffc107;
-            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+        .file-image-shell.loaded .image-loading-indicator {
+            opacity: 0;
+	            transform: scale(0.94);
+	            visibility: hidden;
+	        }
+	        .gallery .item .card:hover .file-image {
+	            transform: scale(1.025);
+	        }
+	        .file-icon-shell {
+	            display: flex;
+	            flex-direction: column;
+	            align-items: center;
+            justify-content: center;
+            gap: .5rem;
+	            background: linear-gradient(180deg, #f8f9fa 0%, #eef2f7 100%);
+	            color: #6c757d;
+	        }
+	        .directory-shell {
+	            background: linear-gradient(180deg, #fff8df 0%, #fff2b8 100%);
+	            color: #ffc107;
+	        }
+	        .file-icon-shell .file-type-icon {
+	            font-size: clamp(2.75rem, 8vw, 4.25rem);
+	            line-height: 1;
+	        }
+        .file-icon-shell .file-type-label {
+            max-width: 80%;
+            font-size: .75rem;
+            font-weight: 600;
+            text-transform: uppercase;
         }
-        .gallery .item .card:hover .directory-icon {
+        .gallery .item .card:hover .file-type-icon {
             transform: scale(1.04);
         }
-        .image-preview-overlay {
-            position: fixed;
-            top: 0;
+	        .file-type-icon {
+	            transition: transform var(--pixr2-normal) var(--pixr2-ease);
+	        }
+	        .file-card-footer {
+	            flex: 1 0 auto;
+	            min-height: 4.6rem;
+	            display: flex;
+	            align-items: center;
+	            padding: .65rem .75rem;
+	        }
+	        .file-meta {
+	            min-width: 0;
+	        }
+	        .file-name {
+	            color: #212529;
+	            font-size: .95rem;
+	            font-weight: 500;
+	            line-height: 1.25;
+	        }
+	        .file-subtitle {
+	            color: #6c757d;
+	            font-size: .82rem;
+	            line-height: 1.3;
+	        }
+	        .file-actions .btn {
+	            width: 2.15rem;
+	            height: 2.15rem;
+	            display: inline-flex;
+	            align-items: center;
+	            justify-content: center;
+	            padding: 0;
+	        }
+	        .gallery-placeholder .card {
+	            cursor: default;
+	            pointer-events: none;
+	        }
+	        .gallery .gallery-placeholder .card:hover {
+	            transform: none;
+	            box-shadow: none!important;
+	        }
+	        .skeleton-block,
+	        .skeleton-line {
+	            background-color: #eef2f7;
+	            animation: pixr2-skeleton-pulse 850ms ease-in-out infinite alternate;
+	        }
+	        .skeleton-line {
+	            display: block;
+	            height: .82rem;
+	            border-radius: 999px;
+	            margin-bottom: .55rem;
+	        }
+	        .skeleton-line-name {
+	            width: 78%;
+	        }
+	        .skeleton-line-size {
+	            width: 42%;
+	            height: .72rem;
+	            margin-bottom: 0;
+	        }
+	        @keyframes pixr2-skeleton-pulse {
+	            from { opacity: .48; }
+	            to { opacity: 1; }
+	        }
+	        .gallery {
+	            --pixr2-card-media: 9.25rem;
+	            --pixr2-card-footer: 4.85rem;
+	            display: grid;
+	            grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+	            gap: 1rem;
+	            align-items: start;
+	            transition: opacity var(--pixr2-fast) var(--pixr2-ease);
+	        }
+	        .gallery.is-refreshing {
+	            opacity: .78;
+	            pointer-events: none;
+	        }
+	        .gallery .item .card {
+	            flex-direction: column;
+	            height: calc(var(--pixr2-card-media) + var(--pixr2-card-footer));
+	            min-height: 0;
+	            overflow: hidden;
+	        }
+	        .gallery .item .card:hover {
+	            transform: translateY(-3px);
+	        }
+	        .file-visual-shell {
+	            width: 100%;
+	            min-width: 0;
+	            height: var(--pixr2-card-media);
+	            aspect-ratio: auto;
+	            border-right: 0;
+	            border-bottom: 1px solid rgba(0, 0, 0, .08);
+	        }
+	        .gallery .item .file-image {
+	            position: absolute;
+	            inset: 0;
+	        }
+	        .file-icon-shell {
+	            gap: .3rem;
+	        }
+	        .directory-shell {
+	            background: linear-gradient(135deg, #fff8db 0%, #ffeaa7 100%);
+	        }
+	        .file-icon-shell .file-type-icon {
+	            font-size: 4.35rem;
+	        }
+	        .file-icon-shell .file-type-label {
+	            font-size: .72rem;
+	        }
+	        .file-card-footer {
+	            flex: 0 0 var(--pixr2-card-footer);
+	            min-width: 0;
+	            height: var(--pixr2-card-footer);
+	            min-height: var(--pixr2-card-footer);
+	            border-top: 0;
+	            padding: .75rem .85rem;
+	            background-color: #fff;
+	        }
+	        .file-name {
+	            font-size: .98rem;
+	            font-weight: 600;
+	        }
+	        .file-subtitle {
+	            font-size: .84rem;
+	        }
+	        .file-actions .btn {
+	            width: 2.1rem;
+	            height: 2.1rem;
+	        }
+	        @media (max-width: 575.98px) {
+	            .gallery {
+	                --pixr2-card-media: 7.5rem;
+	                --pixr2-card-footer: 4.6rem;
+	                grid-template-columns: repeat(auto-fill, minmax(9.75rem, 1fr));
+	                gap: .75rem;
+	            }
+	            .file-actions .btn {
+	                width: 1.9rem;
+	                height: 1.9rem;
+	            }
+	            .file-icon-shell .file-type-icon {
+	                font-size: 3.6rem;
+	            }
+	        }
+	        .image-preview-overlay {
+	            position: fixed;
+	            top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(248, 249, 250, 0.78);
-            backdrop-filter: blur(16px);
+	            background-color: rgba(248, 249, 250, 0.88);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -2210,8 +2950,7 @@ function serveSharePage(shareId) {
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(248, 249, 250, 0.62);
-            backdrop-filter: blur(8px);
+	            background-color: rgba(248, 249, 250, 0.78);
             display: flex;
             justify-content: center;
             align-items: center;
@@ -2262,7 +3001,7 @@ function serveSharePage(shareId) {
         <div class="card shadow-sm">
             <div class="card-body">
                 <nav id="breadcrumb" style="--bs-breadcrumb-divider: '>';" aria-label="breadcrumb" class="mb-3"></nav>
-                <div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3" id="gallery"></div>
+                <div class="gallery" id="gallery"></div>
                 <nav id="paginationContainer" class="mt-4" aria-label="Page navigation">
                     <ul class="pagination justify-content-center" id="pagination"></ul>
                 </nav>
@@ -2292,12 +3031,29 @@ function serveSharePage(shareId) {
             let shareRootPath = '';
             let currentPage = 1;
             let loadingTimer = null;
+            let loadingHideTimer = null;
+            let loadingRequests = 0;
             let loadingStart = 0;
             let currentImageList = [];
             let currentImageIndex = -1;
-            let previewCloseTimer = null;
-            let previewRequestId = 0;
-            const imageCache = new Map();
+	            let previewCloseTimer = null;
+	            let previewRequestId = 0;
+	            const imageCache = new Map();
+	            const loadedImageUrls = new Set();
+	            const galleryCache = new Map();
+	            let hasRenderedGallery = false;
+	            let galleryRequestId = 0;
+
+	            function escapeHtml(value = '') {
+                const htmlEscapes = {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                };
+                return String(value).replace(/[&<>"']/g, char => htmlEscapes[char]);
+            }
             
             const galleryEl = document.getElementById('gallery');
             const breadcrumbEl = document.getElementById('breadcrumb');
@@ -2309,35 +3065,73 @@ function serveSharePage(shareId) {
             const previewPrevBtn = document.getElementById('previewPrevBtn');
             const previewNextBtn = document.getElementById('previewNextBtn');
 
-            async function loadGallery() {
-                showLoading(true);
-                galleryEl.innerHTML = '';
-                try {
-                    const response = await fetch(\`/api/s/\${shareId}/list?prefix=\${encodeURIComponent(currentRelativePath)}&page=\${currentPage}\`);
-                    if (!response.ok) {
-                        const errorText = response.status === 404 ? '分享链接不存在或已失效。' : '加载失败，请稍后再试。';
-                        throw new Error(errorText);
-                    }
-                    const data = await response.json();
-                    if (data && data.success) {
-                        if (shareRootPath === '') {
-                           // On first load, determine the root path of the share from the response
-                           shareRootPath = data.currentPath.substring(0, data.currentPath.length - currentRelativePath.length);
-                        }
-                        updateBreadcrumb(data.currentPath);
-                        renderGallery(data.directories, data.files);
-                        renderPagination(data.pagination);
-                    } else {
-                        throw new Error(data.message || '加载内容失败');
-                    }
-                } catch (error) {
-                    galleryEl.innerHTML = \`<div class="col"><p class="text-danger text-center">\${error.message}</p></div>\`;
-                } finally {
-                    showLoading(false);
-                }
-            }
+	            async function loadGallery() {
+	                const cacheKey = \`\${currentRelativePath}|\${currentPage}\`;
+	                const cachedData = galleryCache.get(cacheKey);
+	                const requestId = ++galleryRequestId;
 
-            function updateBreadcrumb(fullPath) {
+	                if (cachedData) {
+	                    applyGalleryData(cachedData);
+	                } else if (!hasRenderedGallery) {
+	                    renderGalleryLoading();
+	                } else {
+	                    galleryEl.classList.add('is-refreshing');
+	                }
+
+	                try {
+	                    const response = await fetch(\`/api/s/\${shareId}/list?prefix=\${encodeURIComponent(currentRelativePath)}&page=\${currentPage}\`);
+	                    if (!response.ok) {
+	                        const errorText = response.status === 404 ? '分享链接不存在或已失效。' : '加载失败，请稍后再试。';
+	                        throw new Error(errorText);
+	                    }
+	                    const data = await response.json();
+	                    if (requestId !== galleryRequestId) return;
+	                    galleryEl.classList.remove('is-refreshing');
+	                    if (data && data.success) {
+	                        galleryCache.set(cacheKey, data);
+	                        if (!cachedData || JSON.stringify(cachedData) !== JSON.stringify(data)) {
+	                            applyGalleryData(data);
+	                        }
+	                    } else {
+	                        throw new Error(data.message || '加载内容失败');
+	                    }
+	                } catch (error) {
+	                    if (requestId !== galleryRequestId) return;
+	                    galleryEl.classList.remove('is-refreshing');
+	                    if (!cachedData) {
+	                        galleryEl.innerHTML = \`<div class="col"><p class="text-danger text-center">\${error.message}</p></div>\`;
+	                    }
+	                }
+	            }
+
+	            function applyGalleryData(data) {
+	                if (shareRootPath === '') {
+	                   // On first load, determine the root path of the share from the response
+	                   shareRootPath = data.currentPath.substring(0, data.currentPath.length - currentRelativePath.length);
+	                }
+	                updateBreadcrumb(data.currentPath);
+	                renderGallery(data.directories, data.files);
+	                renderPagination(data.pagination);
+	                hasRenderedGallery = true;
+	            }
+
+	            function renderGalleryLoading(count = 8) {
+	                galleryEl.innerHTML = Array.from({ length: count }, (_, index) => \`
+	                    <div class="col item gallery-placeholder" aria-hidden="true" style="animation-delay: \${index * 18}ms">
+	                        <div class="card h-100">
+	                            <div class="file-visual-shell skeleton-block"></div>
+	                            <div class="card-footer file-card-footer text-body-secondary small">
+	                                <div class="file-meta w-100">
+	                                    <span class="skeleton-line skeleton-line-name"></span>
+	                                    <span class="skeleton-line skeleton-line-size"></span>
+	                                </div>
+	                            </div>
+	                        </div>
+	                    </div>
+	                \`).join('');
+	            }
+
+	            function updateBreadcrumb(fullPath) {
                 breadcrumbEl.innerHTML = '<ol class="breadcrumb mb-0"></ol>';
                 const ol = breadcrumbEl.querySelector('ol');
                 
@@ -2355,56 +3149,81 @@ function serveSharePage(shareId) {
                         pathAccumulator += part + '/';
                         const item = document.createElement('li');
                         item.className = 'breadcrumb-item';
-                        item.innerHTML = \`<a href="#" data-path="\${pathAccumulator}">\${part}</a>\`;
+                        item.innerHTML = \`<a href="#" data-path="\${escapeHtml(pathAccumulator)}">\${escapeHtml(part)}</a>\`;
                         ol.appendChild(item);
                     });
                 }
                 ol.lastChild.classList.add('active');
                 ol.lastChild.setAttribute('aria-current', 'page');
-                ol.lastChild.innerHTML = ol.lastChild.textContent;
+                ol.lastChild.textContent = ol.lastChild.textContent;
             }
 
             function renderGallery(directories, files) {
                 galleryEl.innerHTML = '';
                 currentImageList = files
-                    .filter(file => file.name !== '.null')
+                    .filter(file => file.name !== '.null' && file.isImage)
                     .map(file => file.url);
                 const items = [...directories.map(d => ({...d, isDir: true})), ...files.map(f => ({...f, isFile: true}))];
                 if (items.length === 0) {
                     galleryEl.innerHTML = '<div class="col"><p class="text-muted text-center">此文件夹为空</p></div>';
                     return;
                 }
-                items.forEach(item => {
-                    const col = document.createElement('div');
-                    col.className = 'col item';
-                    if (item.isDir) {
-                        col.innerHTML = \`
-                            <div class="card text-center h-100" data-path="\${item.path.substring(shareRootPath.length)}">
-                                <div class="card-body d-flex flex-column justify-content-center align-items-center">
-                                    <i class="bi bi-folder-fill directory-icon"></i>
-                                    <p class="card-text text-truncate mt-2" title="\${item.name}">\${item.name}</p>
-                                </div>
-                            </div>
-                        \`;
+	                items.forEach(item => {
+	                    const col = document.createElement('div');
+	                    col.className = 'col item';
+	                    const safeName = escapeHtml(item.name || '');
+	                    const safeUrl = escapeHtml(item.url || '');
+	                    const safeDirectUrl = escapeHtml(item.directUrl || item.url || '');
+	                    const safeIconClass = escapeHtml(item.iconClass || 'bi-file-earmark');
+	                    const safeLabel = escapeHtml(item.label || '文件');
+	                    const imageAlreadyLoaded = item.isImage && loadedImageUrls.has(item.url);
+		                    if (item.isDir) {
+		                        col.innerHTML = \`
+		                            <div class="card h-100" data-path="\${escapeHtml(item.path.substring(shareRootPath.length))}">
+		                                <div class="file-visual-shell file-icon-shell directory-shell">
+		                                    <i class="bi bi-folder-fill file-type-icon"></i>
+		                                </div>
+		                                <div class="card-footer file-card-footer text-body-secondary small">
+		                                    <div class="file-meta w-100">
+		                                        <p class="card-text file-name text-truncate mb-1" title="\${safeName}">\${safeName}</p>
+		                                        <p class="card-text file-subtitle mb-0">文件夹</p>
+		                                    </div>
+		                                </div>
+		                            </div>
+		                        \`;
                     } else {
                         col.innerHTML = \`
                            <div class="card h-100">
-                               \${item.name === '.null' 
-                                   ? '<div class="card-body text-center d-flex flex-column justify-content-center align-items-center"><i class="bi bi-file-earmark-binary fs-1"></i></div>'
-                                   : \`<img data-src="\${item.url}" class="card-img-top file-image w-100 h-100 object-fit-cover lazyload" alt="\${item.name}" loading="lazy">\`
-                               }
-                               <div class="card-footer text-body-secondary small">
-                                   <div class="d-flex justify-content-between align-items-center">
-                                       <div class="flex-grow-1 text-truncate me-2">
-                                           <p class="card-text text-truncate mb-0" title="\${item.name}">\${item.name}</p>
-                                           <p class="card-text mb-0"><small>\${formatFileSize(item.size)}</small></p>
-                                       </div>
-                                       \${item.name !== '.null' ? \`
-                                           <div class="btn-group flex-shrink-0">
-                                               <button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${item.url}" title="预览"><i class="bi bi-eye"></i></button>
-                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${item.directUrl || item.url}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
-                                           </div>
-                                       \` : ''}
+	                               \${item.name === '.null'
+	                                   ? '<div class="card-body text-center d-flex flex-column justify-content-center align-items-center"><i class="bi bi-file-earmark-binary fs-1"></i></div>'
+		                                   : item.isImage
+		                                       ? \`
+		                                           <div class="file-visual-shell file-image-shell\${imageAlreadyLoaded ? ' loaded' : ''}">
+		                                               <img \${imageAlreadyLoaded ? \`src="\${safeUrl}"\` : \`data-src="\${safeUrl}"\`} class="card-img-top file-image\${imageAlreadyLoaded ? ' loaded' : ' lazyload'}" alt="\${safeName}" loading="\${imageAlreadyLoaded ? 'eager' : 'lazy'}">
+		                                               <div class="image-loading-indicator">
+		                                                   <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+		                                               </div>
+		                                           </div>
+		                                       \`
+		                                       : \`
+		                                           <div class="file-visual-shell file-icon-shell">
+		                                               <i class="bi \${safeIconClass} file-type-icon"></i>
+		                                               <span class="file-type-label text-truncate">\${safeLabel}</span>
+		                                           </div>
+		                                       \`
+		                               }
+	                               <div class="card-footer file-card-footer text-body-secondary small">
+		                                   <div class="d-flex justify-content-between align-items-center w-100 gap-2">
+		                                       <div class="file-meta flex-grow-1">
+		                                           <p class="card-text file-name text-truncate mb-1" title="\${safeName}">\${safeName}</p>
+		                                           <p class="card-text file-subtitle mb-0">\${formatFileSize(item.size)}</p>
+		                                       </div>
+		                                       \${item.name !== '.null' ? \`
+		                                           <div class="btn-group flex-shrink-0 file-actions">
+		                                               \${item.isImage ? \`<button class="btn btn-sm btn-outline-secondary preview-btn" data-url="\${safeUrl}" title="预览"><i class="bi bi-eye"></i></button>\` : ''}
+		                                               <button class="btn btn-sm btn-outline-secondary copy-direct-url-btn" data-url="\${safeDirectUrl}" title="复制直链"><i class="bi bi-link-45deg"></i></button>
+		                                           </div>
+		                                       \` : ''}
                                    </div>
                                </div>
                            </div>
@@ -2439,22 +3258,52 @@ function serveSharePage(shareId) {
                 const promise = new Promise(resolve => {
                     const image = new Image();
                     image.decoding = 'async';
-                    image.onload = () => resolve(url);
-                    image.onerror = () => resolve(url);
+                    const done = () => {
+                        loadedImageUrls.add(url);
+                        resolve(url);
+                    };
+                    image.onload = done;
+                    image.onerror = done;
                     image.src = url;
                 });
                 imageCache.set(url, promise);
                 return promise;
             }
 
-            function loadGalleryImage(image) {
-                const src = image.dataset.src;
-                preloadImage(src).then(() => {
-                    image.src = src;
-                    image.classList.remove('lazyload');
-                    requestAnimationFrame(() => image.classList.add('loaded'));
-                });
-            }
+	            function loadGalleryImage(image) {
+	                const src = image.dataset.src;
+	                if (!src || image.dataset.loading === 'true') return;
+	                image.dataset.loading = 'true';
+
+	                const shell = image.closest('.file-image-shell');
+	                const markLoaded = () => requestAnimationFrame(() => {
+	                    loadedImageUrls.add(src);
+	                    image.classList.add('loaded');
+	                    if (shell) shell.classList.add('loaded');
+	                });
+
+	                let loadPromise = imageCache.get(src);
+	                if (!loadPromise) {
+	                    loadPromise = new Promise(resolve => {
+	                        const done = () => {
+	                            image.onload = null;
+	                            image.onerror = null;
+	                            loadedImageUrls.add(src);
+	                            resolve(src);
+	                        };
+	                        image.onload = done;
+	                        image.onerror = done;
+	                        image.src = src;
+	                        if (image.complete) done();
+	                    });
+	                    imageCache.set(src, loadPromise);
+	                } else {
+	                    image.src = src;
+	                }
+
+	                image.classList.remove('lazyload');
+	                loadPromise.then(markLoaded);
+	            }
 
             function preloadAdjacentImages() {
                 [currentImageIndex - 1, currentImageIndex + 1].forEach(index => {
@@ -2645,20 +3494,31 @@ function serveSharePage(shareId) {
                 const MIN_TIME = 350; // ms minimum display time for loader
 
                 if (show) {
-                    clearTimeout(loadingTimer); // Clear any pending hide timers
+                    loadingRequests += 1;
+                    clearTimeout(loadingHideTimer);
+                    if (loadingOverlay.classList.contains('show') || loadingTimer) return;
+
                     loadingTimer = setTimeout(() => {
                         loadingOverlay.classList.add('show');
                         loadingStart = Date.now();
+                        loadingTimer = null;
                     }, DELAY);
                 } else {
+                    loadingRequests = Math.max(0, loadingRequests - 1);
+                    if (loadingRequests > 0) return;
+
                     clearTimeout(loadingTimer); // Cancel showing the loader if it hasn't appeared yet
+                    loadingTimer = null;
+                    clearTimeout(loadingHideTimer);
+
                     if (loadingStart > 0) { // If the loader was shown
                         const elapsed = Date.now() - loadingStart;
                         const remaining = MIN_TIME - elapsed;
                         if (remaining > 0) {
-                            setTimeout(() => {
+                            loadingHideTimer = setTimeout(() => {
                                 loadingOverlay.classList.remove('show');
                                 loadingStart = 0;
+                                loadingHideTimer = null;
                             }, remaining);
                         } else {
                             loadingOverlay.classList.remove('show');
@@ -2685,9 +3545,10 @@ function serveSharePage(shareId) {
 async function handleWebUpload(request, bucket) {
     try {
         // 解析表单数据
-        const formData = await request.formData();
-        const file = formData.get('file');
-        const path = formData.get('path') || ''; // 获取自定义路径
+	        const formData = await request.formData();
+	        const file = formData.get('file');
+	        const path = formData.get('path') || '';
+	        const useRandomName = formData.get('randomName') === 'true';
 
         if (!file) {
             return new Response(JSON.stringify({
@@ -2703,47 +3564,44 @@ async function handleWebUpload(request, bucket) {
         const fileBuffer = await file.arrayBuffer();
         const uint8Array = new Uint8Array(fileBuffer);
 
-        // 检测文件类型
+        // 检测文件类型；图片用内容签名校准，其他文件使用浏览器提供的 MIME。
         const detectedType = detectImageType(uint8Array);
-        if (!detectedType) {
-            return new Response(JSON.stringify({
-                success: false,
-                message: "Only JPG/PNG/GIF/WEBP formats are supported"
-            }), {
-                status: 400,
-                headers: { 'Content-Type': 'application/json' }
-            });
-        }
+        const contentType = detectedType?.mime || file.type || 'application/octet-stream';
 
-        // 生成文件名，包含日期前缀和短UUID
-        const date = new Date();
-        const formattedDate = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-        const shortUUID = crypto.randomUUID().split('-')[0];
+	        const fileName = buildStoredFileName(file.name, detectedType, contentType, useRandomName);
 
-        // 如果提供了路径，则构建完整的文件键
-        let key = `${formattedDate}_${shortUUID}.${detectedType.ext}`;
+	        // 如果提供了路径，则构建完整的文件键
+	        let key = fileName;
         if (path) {
             // 确保路径以斜杠结尾
             const formattedPath = path.endsWith('/') ? path : `${path}/`;
-            key = `${formattedPath}${key}`;
-        }
+	            key = `${formattedPath}${key}`;
+	        }
+
+	        if (!useRandomName) {
+	            key = await buildUniqueR2Key(bucket, key);
+	        }
+
+	        const storedFileName = key.split('/').pop() || fileName;
+	        const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
 
         // 上传到R2
         await bucket.put(key, fileBuffer, {
             httpMetadata: {
-                contentType: detectedType.mime,
-                cacheControl: IMAGE_CACHE_CONTROL
+                contentType,
+                cacheControl: FILE_CACHE_CONTROL
             }
         });
 
-        const imageUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
+        const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
 
-        return new Response(JSON.stringify({
-            success: true,
-            url: imageUrl,
-            markdown: `![img](${imageUrl})`,
-            key: key
-        }), {
+	        return new Response(JSON.stringify({
+	            success: true,
+	            url: fileUrl,
+	            markdown: buildMarkdownLink(storedFileName, fileUrl, fileTypeInfo.isImage),
+	            isImage: fileTypeInfo.isImage,
+	            key: key
+	        }), {
             headers: { 'Content-Type': 'application/json' }
         });
 
@@ -3165,35 +4023,30 @@ async function handleListDirectories(request, bucket) {
 // --- 辅助函数 ---
 
 /**
- * 从URL下载图片并上传到R2
- * @param {string} imageUrl - 要下载的图片URL
+ * 从URL下载文件并上传到R2
+ * @param {string} fileUrl - 要下载的文件URL
  * @param {R2Bucket} bucket - R2存储桶实例
  * @param {boolean} isDocument - 是否是作为文档发送的
  * @param {string} userPath - 用户指定的上传子路径
+ * @param {string} originalName - 原始文件名
+ * @param {string} mimeType - 已知 MIME 类型
  * @returns {Promise<object>} - 包含上传结果的对象
  */
-async function uploadImageToR2(imageUrl, bucket, isDocument = false, userPath = '') {
+async function uploadFileToR2(fileUrl, bucket, isDocument = false, userPath = '', originalName = '', mimeType = '') {
     try {
-        const response = await fetch(imageUrl);
+        const response = await fetch(fileUrl);
         if (!response.ok) throw new Error('下载文件失败');
 
         const buffer = await response.arrayBuffer();
         const uint8Array = new Uint8Array(buffer);
 
         const detectedType = detectImageType(uint8Array);
-        if (!detectedType) {
-            return {
-                ok: false,
-                error: 'UNSUPPORTED_TYPE',
-                message: '只支持 JPG/PNG/GIF/WEBP 格式文件'
-            };
-        }
-        const date = new Date();
-        const formattedDate = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-        const shortUUID = crypto.randomUUID().split('-')[0];
+        const contentType = detectedType?.mime || mimeType || response.headers.get('Content-Type') || 'application/octet-stream';
+        const fileName = buildStoredFileName(originalName || getFileNameFromUrl(fileUrl), detectedType, contentType);
+        const fileTypeInfo = getFileTypeInfo(fileName, contentType);
 
         // 如果提供了用户路径，则构建完整的文件键
-        let key = `${formattedDate}_${shortUUID}.${detectedType.ext}`;
+        let key = fileName;
         if (userPath) {
             // 确保路径格式正确（以斜杠结尾）
             const formattedPath = userPath.endsWith('/') ? userPath : `${userPath}/`;
@@ -3202,12 +4055,12 @@ async function uploadImageToR2(imageUrl, bucket, isDocument = false, userPath = 
 
         await bucket.put(key, buffer, {
             httpMetadata: {
-                contentType: detectedType.mime,
-                cacheControl: IMAGE_CACHE_CONTROL
+                contentType,
+                cacheControl: FILE_CACHE_CONTROL
             },
         });
 
-        return { ok: true, key };
+        return { ok: true, key, fileName, isImage: fileTypeInfo.isImage };
     } catch (error) {
         console.error('上传失败:', error);
         return {
@@ -3323,12 +4176,17 @@ async function listR2Files(request, bucket, forcePrefix = null) {
             if (!name) return null;
             if (name === '.null' || object.key.endsWith('/')) return null;
             const objectUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, object.key);
+            const fileTypeInfo = getFileTypeInfo(object.key);
             return {
                 name,
                 key: object.key,
                 size: object.size,
                 uploaded: object.uploaded,
                 type: 'file',
+                isImage: fileTypeInfo.isImage,
+                category: fileTypeInfo.category,
+                iconClass: fileTypeInfo.iconClass,
+                label: fileTypeInfo.label,
                 url: objectUrl,
                 directUrl: objectUrl
             };
