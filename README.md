@@ -47,13 +47,16 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 - 再选择 **R2 对象存储** 
 - 创建一个任意名称的 R2 存储桶
 
-### 2. 上传代码部署  
+### 2. 从 GitHub Repo 部署
+- Fork 或上传本项目到你自己的 GitHub 仓库
 - 在 Cloudflare 侧边栏找到 **计算和 AI**
 - 选择 **Workers 和 Pages**
-- 创建一个新的 Workers，选择 **从 Hello World! 模板开始** 
-- 填写一个喜欢的名字并部署  
-- 点击右上角的 **编辑代码**，将 [_worker.js](_worker.js) 文件内容粘贴进去并保存部署  
-- 返回 Worker 项目，点击 **绑定** -> **添加绑定**  
+- 创建应用，选择 **Import a repository**
+- 选择你的 PixR2 仓库并创建 Worker
+- Worker 名称填写 `pixr2`，或同步修改 [wrangler.toml](wrangler.toml) 里的 `name`
+- 项目入口已经写在 [wrangler.toml](wrangler.toml) 中：`main = "src/index.js"`
+- 如果 Cloudflare 让你填写构建设置，项目根目录保持 `/`，Build command 留空，Deploy command 保持默认 `npx wrangler deploy`
+- Worker 创建完成后，进入项目设置，点击 **绑定** -> **添加绑定**
   - 选择 **R2 存储桶**，变量名填写 `BUCKET_R2`，选择之前创建的 R2 存储桶  
   - 再次添加绑定，选择 **KV 命名空间**，变量名填写 `SHARES_KV`，选择之前创建的 KV  
   - 再次添加绑定，选择 **KV 命名空间**，变量名填写 `INDEXES_KV`，选择之前创建的 KV  
@@ -70,6 +73,14 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 - 访问 `https://<你的自定义域>/setWebhook` 激活 Telegram Webhook  
 - 现在就可以通过 Telegram Bot 和 Web 面板开始使用了  
 - 在 Telegram 里发送任意消息即可获得 Bot 指令帮助  
+
+### 3. 项目结构
+- [_worker.js](_worker.js)：兼容入口，转发到模块化 Worker 入口
+- [src/index.js](src/index.js)：Worker 主入口与路由注册
+- [src/api/files.js](src/api/files.js)：文件上传、分片上传、目录、分享和文件操作 API
+- [src/api/telegram.js](src/api/telegram.js)：Telegram Bot Webhook 与消息处理
+- [src/pages](src/pages)：登录、上传、文件管理和分享页面
+- [src/utils/files.js](src/utils/files.js)：文件名、类型、R2 列表和直链工具函数
 
 
 ## 其他
