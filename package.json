@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "wrangler deploy --dry-run --outdir .wrangler/tmp-build",
+    "build": "wrangler deploy",
     "check": "wrangler deploy --dry-run --outdir .wrangler/tmp-build",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
