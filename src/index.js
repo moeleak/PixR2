@@ -21,6 +21,7 @@ import { serveErrorPage } from './pages/error.js';
 import { serveExplorerPage } from './pages/explorer.js';
 import { serveLoginPage } from './pages/login.js';
 import { serveSharePage } from './pages/share.js';
+import { serveStylesheet } from './pages/styles/index.js';
 
 // Cloudflare Workers 的主入口点
 export default {
@@ -66,6 +67,7 @@ export default {
         // 网页界面路由
         router.get('/', serveHomePage);
         router.get('/index.html', serveHomePage);
+        router.get('/assets/styles/:name', (req, env, params) => serveStylesheet(params.name));
         router.post('/login', (req) => handleLogin(req, env.SECRET_KEY));
 
         // 公共分享路由
