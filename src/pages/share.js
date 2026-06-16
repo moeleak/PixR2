@@ -290,14 +290,45 @@ export function serveSharePage(shareId) {
                 opacity 220ms var(--pixr2-ease),
                 visibility 220ms var(--pixr2-ease);
         }
-        .image-preview-overlay.show {
-            opacity: 1;
-            visibility: visible;
-            pointer-events: auto;
-        }
-        .preview-content {
-            max-width: 90vw;
-            max-height: 90vh;
+	        .image-preview-overlay.show {
+	            opacity: 1;
+	            visibility: visible;
+	            pointer-events: auto;
+	        }
+	        .preview-control {
+	            z-index: 1202;
+	            width: 3rem;
+	            height: 3rem;
+	            display: inline-flex;
+	            align-items: center;
+	            justify-content: center;
+	            padding: 0;
+	            border-color: rgba(15, 23, 42, .22);
+	            background-color: rgba(255, 255, 255, .94);
+	            color: #212529;
+	            box-shadow: 0 .7rem 1.5rem rgba(15, 23, 42, .18);
+	            touch-action: manipulation;
+	        }
+	        .preview-control:hover,
+	        .preview-control:focus {
+	            background-color: #fff;
+	            color: #212529;
+	        }
+	        .preview-control:disabled {
+	            opacity: .35;
+	        }
+	        .preview-close-btn {
+	            z-index: 1203;
+	            padding: .75rem;
+	            border-radius: 50%;
+	            background-color: rgba(255, 255, 255, .94);
+	            box-shadow: 0 .55rem 1.2rem rgba(15, 23, 42, .14);
+	            opacity: 1;
+	            touch-action: manipulation;
+	        }
+	        .preview-content {
+	            max-width: 90vw;
+	            max-height: 90vh;
             object-fit: contain;
             cursor: default;
             border-radius: .5rem;
@@ -329,11 +360,39 @@ export function serveSharePage(shareId) {
                 transform var(--pixr2-normal) var(--pixr2-ease);
             pointer-events: none;
         }
-        .image-preview-overlay.is-loading .preview-loader {
-            opacity: 1;
-            transform: scale(1);
-        }
-        .loading-overlay {
+	        .image-preview-overlay.is-loading .preview-loader {
+	            opacity: 1;
+	            transform: scale(1);
+	        }
+	        @media (max-width: 575.98px) {
+	            .image-preview-overlay {
+	                padding: .75rem .75rem calc(4.75rem + env(safe-area-inset-bottom));
+	            }
+	            .preview-content {
+	                max-width: calc(100vw - 1.5rem);
+	                max-height: calc(100dvh - 6.5rem);
+	            }
+	            .preview-nav-btn {
+	                top: auto !important;
+	                bottom: max(.75rem, env(safe-area-inset-bottom)) !important;
+	                width: 2.75rem;
+	                height: 2.75rem;
+	                margin: 0 !important;
+	                transform: none !important;
+	            }
+	            #previewPrevBtn {
+	                right: auto !important;
+	                left: calc(50% - 3.25rem) !important;
+	            }
+	            #previewNextBtn {
+	                right: auto !important;
+	                left: calc(50% + .5rem) !important;
+	            }
+	            .preview-close-btn {
+	                margin: .75rem !important;
+	            }
+	        }
+	        .loading-overlay {
             position: fixed;
             top: 0;
             left: 0;
@@ -406,9 +465,9 @@ export function serveSharePage(shareId) {
 
     <div id="imagePreview" class="image-preview-overlay">
         <div class="preview-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
-        <button id="previewCloseBtn" class="btn-close position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
-        <button id="previewPrevBtn" class="btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
-        <button id="previewNextBtn" class="btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
+        <button id="previewCloseBtn" class="preview-close-btn btn-close position-absolute top-0 end-0 m-3 fs-4" aria-label="关闭预览"></button>
+        <button id="previewPrevBtn" class="preview-control preview-nav-btn btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3" aria-label="上一张"><i class="bi bi-chevron-left"></i></button>
+        <button id="previewNextBtn" class="preview-control preview-nav-btn btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3" aria-label="下一张"><i class="bi bi-chevron-right"></i></button>
         <img class="preview-content" id="previewImage">
     </div>
 
@@ -849,8 +908,8 @@ export function serveSharePage(shareId) {
 
             function updateNavButtons() {
                 const hasMultipleImages = currentImageList.length > 1;
-                previewPrevBtn.style.display = hasMultipleImages ? 'block' : 'none';
-                previewNextBtn.style.display = hasMultipleImages ? 'block' : 'none';
+                previewPrevBtn.style.display = hasMultipleImages ? 'inline-flex' : 'none';
+                previewNextBtn.style.display = hasMultipleImages ? 'inline-flex' : 'none';
 
                 if(hasMultipleImages) {
                     previewPrevBtn.disabled = currentImageIndex === 0;

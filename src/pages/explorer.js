@@ -330,16 +330,19 @@ export function serveExplorerPage() {
 	        }
 	        .gallery .item[draggable="true"] .card {
 	            cursor: grab;
+	            -webkit-touch-callout: none;
 	        }
 	        .gallery .item[draggable="true"] .card:active {
 	            cursor: grabbing;
 	        }
-	        .gallery .item.dragging .card {
+	        .gallery .item.dragging .card,
+	        .gallery .item.touch-drag-source .card {
 	            opacity: .58;
 	            transform: scale(.985);
 	            box-shadow: 0 .5rem 1.2rem rgba(15, 23, 42, .12)!important;
 	        }
-	        .gallery.is-dragging-item .item[data-item-type="directory"] .card {
+	        .gallery.is-dragging-item .item[data-item-type="directory"] .card,
+	        .gallery.is-touch-dragging .item[data-item-type="directory"] .card {
 	            border-style: dashed;
 	        }
 	        .gallery .item.drop-target .card {
@@ -389,6 +392,14 @@ export function serveExplorerPage() {
 	        }
 	        @keyframes pixr2-spin {
 	            to { transform: rotate(360deg); }
+	        }
+	        body.pixr2-touch-dragging {
+	            cursor: grabbing;
+	            user-select: none;
+	            -webkit-user-select: none;
+	        }
+	        body.pixr2-touch-dragging * {
+	            -webkit-touch-callout: none;
 	        }
 	        @media (max-width: 575.98px) {
 	            .gallery {
@@ -524,14 +535,45 @@ export function serveExplorerPage() {
                 opacity 220ms var(--pixr2-ease),
                 visibility 220ms var(--pixr2-ease);
         }
-        .image-preview-overlay.show {
-            opacity: 1;
-            visibility: visible;
-            pointer-events: auto;
-        }
-        .preview-content {
-            max-width: 90vw;
-            max-height: 90vh;
+	        .image-preview-overlay.show {
+	            opacity: 1;
+	            visibility: visible;
+	            pointer-events: auto;
+	        }
+	        .preview-control {
+	            z-index: 1202;
+	            width: 3rem;
+	            height: 3rem;
+	            display: inline-flex;
+	            align-items: center;
+	            justify-content: center;
+	            padding: 0;
+	            border-color: rgba(15, 23, 42, .22);
+	            background-color: rgba(255, 255, 255, .94);
+	            color: #212529;
+	            box-shadow: 0 .7rem 1.5rem rgba(15, 23, 42, .18);
+	            touch-action: manipulation;
+	        }
+	        .preview-control:hover,
+	        .preview-control:focus {
+	            background-color: #fff;
+	            color: #212529;
+	        }
+	        .preview-control:disabled {
+	            opacity: .35;
+	        }
+	        .preview-close-btn {
+	            z-index: 1203;
+	            padding: .75rem;
+	            border-radius: 50%;
+	            background-color: rgba(255, 255, 255, .94);
+	            box-shadow: 0 .55rem 1.2rem rgba(15, 23, 42, .14);
+	            opacity: 1;
+	            touch-action: manipulation;
+	        }
+	        .preview-content {
+	            max-width: 90vw;
+	            max-height: 90vh;
             object-fit: contain;
             cursor: default;
             border-radius: .5rem;
@@ -563,11 +605,39 @@ export function serveExplorerPage() {
                 transform var(--pixr2-normal) var(--pixr2-ease);
             pointer-events: none;
         }
-        .image-preview-overlay.is-loading .preview-loader {
-            opacity: 1;
-            transform: scale(1);
-        }
-        .loading-overlay {
+	        .image-preview-overlay.is-loading .preview-loader {
+	            opacity: 1;
+	            transform: scale(1);
+	        }
+	        @media (max-width: 575.98px) {
+	            .image-preview-overlay {
+	                padding: .75rem .75rem calc(4.75rem + env(safe-area-inset-bottom));
+	            }
+	            .preview-content {
+	                max-width: calc(100vw - 1.5rem);
+	                max-height: calc(100dvh - 6.5rem);
+	            }
+	            .preview-nav-btn {
+	                top: auto !important;
+	                bottom: max(.75rem, env(safe-area-inset-bottom)) !important;
+	                width: 2.75rem;
+	                height: 2.75rem;
+	                margin: 0 !important;
+	                transform: none !important;
+	            }
+	            #previewPrevBtn {
+	                right: auto !important;
+	                left: calc(50% - 3.25rem) !important;
+	            }
+	            #previewNextBtn {
+	                right: auto !important;
+	                left: calc(50% + .5rem) !important;
+	            }
+	            .preview-close-btn {
+	                margin: .75rem !important;
+	            }
+	        }
+	        .loading-overlay {
             position: fixed;
             top: 0;
             left: 0;
@@ -830,9 +900,9 @@ export function serveExplorerPage() {
 
     <div id="imagePreview" class="image-preview-overlay">
         <div class="preview-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
-        <button id="previewCloseBtn" class="btn-close position-absolute top-0 end-0 m-3 fs-4" style="z-index: 1201;"></button>
-        <button id="previewPrevBtn" class="btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3"><</button>
-        <button id="previewNextBtn" class="btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3">></button>
+	        <button id="previewCloseBtn" class="preview-close-btn btn-close position-absolute top-0 end-0 m-3 fs-4" aria-label="关闭预览"></button>
+	        <button id="previewPrevBtn" class="preview-control preview-nav-btn btn btn-outline-dark position-absolute top-50 start-0 translate-middle-y m-3 fs-3" aria-label="上一张"><i class="bi bi-chevron-left"></i></button>
+	        <button id="previewNextBtn" class="preview-control preview-nav-btn btn btn-outline-dark position-absolute top-50 end-0 translate-middle-y m-3 fs-3" aria-label="下一张"><i class="bi bi-chevron-right"></i></button>
         <img class="preview-content" id="previewImage">
     </div>
 
@@ -859,10 +929,13 @@ export function serveExplorerPage() {
 		            let draggedItems = [];
 		            let dragSourceItem = null;
 		            let activeDropTarget = null;
-		            let dragMoveInProgress = false;
-		            let suppressGalleryClick = false;
-		            let pageDragDepth = 0;
-		            let galleryAutoUploadTimer = null;
+			            let dragMoveInProgress = false;
+			            let suppressGalleryClick = false;
+			            let pageDragDepth = 0;
+			            let galleryAutoUploadTimer = null;
+			            let touchDragState = null;
+			            const TOUCH_DRAG_HOLD_MS = 260;
+			            const TOUCH_DRAG_CANCEL_DISTANCE = 12;
 
             function escapeHtml(value = '') {
                 const htmlEscapes = {
@@ -1300,17 +1373,102 @@ export function serveExplorerPage() {
                 activeDropTarget = null;
             }
 
-            function clearExplorerDragState() {
-                if (dragSourceItem) dragSourceItem.classList.remove('dragging');
-                dragSourceItem = null;
-                draggedItems = [];
-                galleryEl.classList.remove('is-dragging-item');
-                clearDirectoryDropTarget();
-            }
+	            function clearExplorerDragState() {
+	                if (dragSourceItem) dragSourceItem.classList.remove('dragging');
+	                dragSourceItem = null;
+	                draggedItems = [];
+	                galleryEl.classList.remove('is-dragging-item');
+	                clearDirectoryDropTarget();
+	            }
 
-            function suppressImmediateGalleryClick() {
-                suppressGalleryClick = true;
-                setTimeout(() => {
+	            function clearTouchDragState({ suppressClick = false } = {}) {
+	                if (!touchDragState) return;
+
+	                const state = touchDragState;
+	                clearTimeout(state.timer);
+	                if (state.itemEl) {
+	                    state.itemEl.classList.remove('touch-drag-source');
+	                    if (typeof state.itemEl.releasePointerCapture === 'function') {
+	                        try {
+	                            state.itemEl.releasePointerCapture(state.pointerId);
+	                        } catch {}
+	                    }
+	                }
+
+	                touchDragState = null;
+	                document.body.classList.remove('pixr2-touch-dragging');
+	                galleryEl.classList.remove('is-touch-dragging');
+	                clearExplorerDragState();
+
+	                if (suppressClick) suppressImmediateGalleryClick();
+	            }
+
+	            function startTouchItemDrag() {
+	                if (!touchDragState || touchDragState.started) return;
+	                if (touchDragState.items.length === 0 || dragMoveInProgress) {
+	                    clearTouchDragState();
+	                    return;
+	                }
+
+	                touchDragState.started = true;
+	                draggedItems = touchDragState.items.slice();
+	                dragSourceItem = touchDragState.itemEl;
+	                dragSourceItem.classList.add('dragging', 'touch-drag-source');
+	                galleryEl.classList.add('is-dragging-item', 'is-touch-dragging');
+	                document.body.classList.add('pixr2-touch-dragging');
+	                hideItemContextMenu();
+	            }
+
+	            function updateTouchDropTarget(event) {
+	                if (!touchDragState?.started) return;
+
+	                const elementAtPoint = document.elementFromPoint(event.clientX, event.clientY);
+	                const targetItem = getDirectoryDropTarget(elementAtPoint);
+	                if (!targetItem) {
+	                    clearDirectoryDropTarget();
+	                    return;
+	                }
+
+	                const invalidDrop = isInvalidDirectoryDrop(targetItem.dataset.path, touchDragState.items);
+	                setDirectoryDropTarget(targetItem, { invalid: invalidDrop });
+	            }
+
+	            function scrollWindowForTouchDrag(clientY) {
+	                const edgeSize = 72;
+	                const scrollStep = 14;
+	                if (clientY < edgeSize) {
+	                    window.scrollBy({ top: -scrollStep, behavior: 'auto' });
+	                } else if (clientY > window.innerHeight - edgeSize) {
+	                    window.scrollBy({ top: scrollStep, behavior: 'auto' });
+	                }
+	            }
+
+	            function getTouchById(touches, touchId) {
+	                return Array.from(touches || []).find(touch => touch.identifier === touchId) || null;
+	            }
+
+	            async function finishTouchItemDrag(event) {
+	                if (!touchDragState || event.pointerId !== touchDragState.pointerId) return;
+
+	                const wasDragging = touchDragState.started;
+	                if (wasDragging) {
+	                    event.preventDefault();
+	                    event.stopPropagation();
+	                    updateTouchDropTarget(event);
+	                }
+
+	                const targetItem = activeDropTarget;
+	                const sourceItems = touchDragState.items.slice();
+	                clearTouchDragState({ suppressClick: wasDragging });
+
+	                if (wasDragging && targetItem && sourceItems.length > 0) {
+	                    await moveDraggedItemsToDirectory(targetItem, sourceItems);
+	                }
+	            }
+
+	            function suppressImmediateGalleryClick() {
+	                suppressGalleryClick = true;
+	                setTimeout(() => {
                     suppressGalleryClick = false;
                 }, 0);
             }
@@ -1528,13 +1686,134 @@ export function serveExplorerPage() {
                 clearExplorerDragState();
             });
 
-            galleryEl.addEventListener('dragend', () => {
-                suppressImmediateGalleryClick();
-                clearExplorerDragState();
-            });
+	            galleryEl.addEventListener('dragend', () => {
+	                suppressImmediateGalleryClick();
+	                clearExplorerDragState();
+	            });
 
-            function renderPagination({ totalPages }) {
-                paginationEl.innerHTML = '';
+	            galleryEl.addEventListener('pointerdown', event => {
+	                if (event.pointerType !== 'pen' || event.button !== 0 || event.isPrimary === false || dragMoveInProgress) return;
+
+	                const itemEl = closestElement(event.target, '.item[data-item-type]');
+	                if (!itemEl || closestElement(event.target, '.item-checkbox, .copy-direct-url-btn')) return;
+
+	                const dragItems = getDragItemsFromElement(itemEl);
+	                if (dragItems.length === 0) return;
+
+	                clearTouchDragState();
+	                touchDragState = {
+	                    pointerId: event.pointerId,
+	                    itemEl,
+	                    items: dragItems,
+	                    startX: event.clientX,
+	                    startY: event.clientY,
+	                    started: false,
+	                    timer: null
+	                };
+
+	                if (typeof itemEl.setPointerCapture === 'function') {
+	                    try {
+	                        itemEl.setPointerCapture(event.pointerId);
+	                    } catch {}
+	                }
+
+	                touchDragState.timer = setTimeout(startTouchItemDrag, TOUCH_DRAG_HOLD_MS);
+	            });
+
+	            galleryEl.addEventListener('pointermove', event => {
+	                if (!touchDragState || event.pointerId !== touchDragState.pointerId) return;
+
+	                const distance = Math.hypot(event.clientX - touchDragState.startX, event.clientY - touchDragState.startY);
+	                if (!touchDragState.started) {
+	                    if (distance > TOUCH_DRAG_CANCEL_DISTANCE) clearTouchDragState();
+	                    return;
+	                }
+
+	                event.preventDefault();
+	                scrollWindowForTouchDrag(event.clientY);
+	                updateTouchDropTarget(event);
+	            });
+
+	            galleryEl.addEventListener('pointerup', event => {
+	                finishTouchItemDrag(event);
+	            });
+
+	            galleryEl.addEventListener('pointercancel', event => {
+	                if (touchDragState && event.pointerId === touchDragState.pointerId) {
+	                    clearTouchDragState({ suppressClick: touchDragState.started });
+	                }
+	            });
+
+	            galleryEl.addEventListener('touchstart', event => {
+	                if (event.touches.length !== 1 || dragMoveInProgress) return;
+
+	                const itemEl = closestElement(event.target, '.item[data-item-type]');
+	                if (!itemEl || closestElement(event.target, '.item-checkbox, .copy-direct-url-btn')) return;
+
+	                const dragItems = getDragItemsFromElement(itemEl);
+	                if (dragItems.length === 0) return;
+
+	                const touch = event.touches[0];
+	                clearTouchDragState();
+	                touchDragState = {
+	                    pointerId: touch.identifier,
+	                    itemEl,
+	                    items: dragItems,
+	                    startX: touch.clientX,
+	                    startY: touch.clientY,
+	                    started: false,
+	                    timer: null
+	                };
+	                touchDragState.timer = setTimeout(startTouchItemDrag, TOUCH_DRAG_HOLD_MS);
+	            }, { passive: true });
+
+	            galleryEl.addEventListener('touchmove', event => {
+	                if (!touchDragState) return;
+	                if (event.touches.length !== 1) {
+	                    clearTouchDragState({ suppressClick: touchDragState.started });
+	                    return;
+	                }
+
+	                const touch = getTouchById(event.touches, touchDragState.pointerId);
+	                if (!touch) return;
+
+	                const distance = Math.hypot(touch.clientX - touchDragState.startX, touch.clientY - touchDragState.startY);
+	                if (!touchDragState.started) {
+	                    if (distance > TOUCH_DRAG_CANCEL_DISTANCE) clearTouchDragState();
+	                    return;
+	                }
+
+	                event.preventDefault();
+	                scrollWindowForTouchDrag(touch.clientY);
+	                updateTouchDropTarget(touch);
+	            }, { passive: false });
+
+	            galleryEl.addEventListener('touchend', event => {
+	                if (!touchDragState) return;
+
+	                const touch = getTouchById(event.changedTouches, touchDragState.pointerId);
+	                if (!touch) {
+	                    if (event.touches.length === 0) clearTouchDragState({ suppressClick: touchDragState.started });
+	                    return;
+	                }
+
+	                finishTouchItemDrag({
+	                    pointerId: touch.identifier,
+	                    clientX: touch.clientX,
+	                    clientY: touch.clientY,
+	                    preventDefault: () => event.preventDefault(),
+	                    stopPropagation: () => event.stopPropagation()
+	                });
+	            }, { passive: false });
+
+	            galleryEl.addEventListener('touchcancel', event => {
+	                if (!touchDragState) return;
+	                const touch = getTouchById(event.changedTouches, touchDragState.pointerId);
+	                if (touch || event.touches.length === 0) clearTouchDragState({ suppressClick: touchDragState.started });
+	            });
+
+	            function renderPagination({ totalPages }) {
+	                paginationEl.innerHTML = '';
                 if (totalPages <= 1) return;
 
                 const createPageItem = (page, text, isActive = false, isDisabled = false) => {
@@ -2089,10 +2368,16 @@ export function serveExplorerPage() {
                 await deleteItems(selectedItems.slice());
             });
 
-            galleryEl.addEventListener('contextmenu', event => {
-                const itemEl = closestElement(event.target, '.item[data-item-type]');
-                if (!itemEl) {
-                    hideItemContextMenu();
+	            galleryEl.addEventListener('contextmenu', event => {
+	                if (touchDragState) {
+	                    event.preventDefault();
+	                    event.stopPropagation();
+	                    return;
+	                }
+
+	                const itemEl = closestElement(event.target, '.item[data-item-type]');
+	                if (!itemEl) {
+	                    hideItemContextMenu();
                     return;
                 }
                 showItemContextMenu(event, itemEl);
@@ -2492,8 +2777,8 @@ export function serveExplorerPage() {
 
             function updateNavButtons() {
                 const hasMultipleImages = currentImageList.length > 1;
-                previewPrevBtn.style.display = hasMultipleImages ? 'block' : 'none';
-                previewNextBtn.style.display = hasMultipleImages ? 'block' : 'none';
+	                previewPrevBtn.style.display = hasMultipleImages ? 'inline-flex' : 'none';
+	                previewNextBtn.style.display = hasMultipleImages ? 'inline-flex' : 'none';
 
                 if(hasMultipleImages) {
                     previewPrevBtn.disabled = currentImageIndex === 0;
