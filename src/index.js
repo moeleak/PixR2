@@ -22,6 +22,7 @@ import { serveExplorerPage } from './pages/explorer.js';
 import { serveLoginPage } from './pages/login.js';
 import { serveSharePage } from './pages/share.js';
 import { serveStylesheet } from './pages/styles/index.js';
+import { isValidShareId } from './storage-keys.js';
 
 // Cloudflare Workers 的主入口点
 export default {
@@ -40,6 +41,7 @@ export default {
         // 如果启用了Telegram Bot，则添加相关环境变量为必需
         if (env.ENABLE_TELEGRAM_BOT === 'true') {
             requiredEnvVars.push('TELEGRAM_BOT_TOKEN');
+            requiredEnvVars.push('TELEGRAM_WEBHOOK_SECRET');
         }
 
         const missingEnvVars = requiredEnvVars.filter(key => !env[key]);
@@ -72,13 +74,13 @@ export default {
 
         // 公共分享路由
         router.get('/s/:shareId', (req, env, params) => {
-            if (!params.shareId || params.shareId.length < 16) {
+            if (!isValidShareId(params.shareId)) {
                 return new Response('Not found', { status: 404 });
             }
             return serveSharePage(params.shareId);
         });
         router.get('/api/s/:shareId/list', (req, env, params) => {
-            if (!params.shareId || params.shareId.length < 16) {
+            if (!isValidShareId(params.shareId)) {
                 return new Response('Not found', { status: 404 });
             }
             return handleListSharedFiles(req, env, params);
@@ -108,16 +110,16 @@ export default {
             // Telegram机器人路由
             router.post('/webhook', (req) => handleTelegramWebhook(req, env)); // 处理Telegram的webhook更新
             // 设置Telegram webhook的辅助路由
-            router.get('/setWebhook', async (req) => {
+            router.get('/setWebhook', requireAuth(async (req, env) => {
                 const url = new URL(req.url);
                 const webhookUrl = `${url.protocol}//${url.host}/webhook`;
                 const TELEGRAM_API_URL = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`;
-                const webhookResponse = await setWebhook(webhookUrl, TELEGRAM_API_URL);
+                const webhookResponse = await setWebhook(webhookUrl, TELEGRAM_API_URL, env.TELEGRAM_WEBHOOK_SECRET);
                 if (webhookResponse.ok) {
                     return new Response(`Webhook set successfully to ${webhookUrl}`);
                 }
                 return new Response('Failed to set webhook', { status: 500 });
-            });
+            }));
         }
 
         // --- 处理请求 ---

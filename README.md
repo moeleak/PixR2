@@ -67,10 +67,12 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 | SECRET_KEY       | Web 面板登陆密码（请不要使用弱密码） |
 | ENABLE_TELEGRAM_BOT | 是否启用 Telegram 机器人功能 ( `true` / `false` ）仅在启用时需要填写以下变量|
 | TELEGRAM_BOT_TOKEN | Telegram 机器人 Token |
+| TELEGRAM_WEBHOOK_SECRET | Telegram Webhook 校验密钥，建议使用 32 位以上随机字符串 |
 | USER_ID          | 允许使用此机器人的 Telegram 用户 ID，多个用户使用英文逗号分隔 |
 
+- `TELEGRAM_WEBHOOK_SECRET` 可以使用 `openssl rand -hex 32` 生成，并作为 Secret/机密变量保存。
 - 最后在 **域和路由** 为你的 Workers 项目添加自定义域  
-- 访问 `https://<你的自定义域>/setWebhook` 激活 Telegram Webhook  
+- 登录 Web 面板后访问 `https://<你的自定义域>/setWebhook` 激活 Telegram Webhook
 - 现在就可以通过 Telegram Bot 和 Web 面板开始使用了  
 - 在 Telegram 里发送任意消息即可获得 Bot 指令帮助  
 

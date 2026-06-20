@@ -1,16 +1,19 @@
-import { FILE_CACHE_CONTROL, R2_PUBLIC_BASE_URL } from '../config.js';
+import { R2_PUBLIC_BASE_URL } from '../config.js';
 import {
     buildMarkdownLink,
     buildObjectUrl,
     buildStoredFileName,
+    buildUploadHttpMetadata,
     buildUniqueR2Key,
     buildUploadTarget,
     detectImageType,
     generateRandomString,
     getFileTypeInfo,
     listR2Files,
-    resolveUploadContentType,
+    normalizeR2Prefix,
+    resolveSafeUploadContentType,
 } from '../utils/files.js';
+import { isValidShareId, SHARE_KV_PREFIX, shareKvKey } from '../storage-keys.js';
 
 /**
  * 处理从网页界面上传的文件
@@ -48,10 +51,7 @@ export async function handleWebUpload(request, bucket) {
         });
 
         await bucket.put(uploadTarget.key, request.body, {
-            httpMetadata: {
-                contentType: uploadTarget.contentType,
-                cacheControl: FILE_CACHE_CONTROL
-            }
+            httpMetadata: buildUploadHttpMetadata(uploadTarget.fileName, requestContentType)
         });
 
         const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, uploadTarget.key);
@@ -68,11 +68,12 @@ export async function handleWebUpload(request, bucket) {
 
     } catch (error) {
         console.error('Upload failed:', error);
+        const isInvalidPath = error.message === 'Invalid path';
         return new Response(JSON.stringify({
             success: false,
-            message: "File upload failed, please try again."
+            message: isInvalidPath ? 'Invalid path' : "File upload failed, please try again."
         }), {
-            status: 500,
+            status: isInvalidPath ? 400 : 500,
             headers: { 'Content-Type': 'application/json' }
         });
     }
@@ -100,11 +101,11 @@ async function handleMultipartWebUpload(request, bucket) {
         const detectedType = detectImageType(uint8Array);
         const contentType = detectedType?.mime || file.type || 'application/octet-stream';
         const fileName = buildStoredFileName(file.name, detectedType, contentType, useRandomName);
+        const normalizedPath = normalizeR2Prefix(path);
 
         let key = fileName;
-        if (path) {
-            const formattedPath = path.endsWith('/') ? path : `${path}/`;
-            key = `${formattedPath}${key}`;
+        if (normalizedPath) {
+            key = `${normalizedPath}${key}`;
         }
 
         if (!useRandomName) {
@@ -112,13 +113,11 @@ async function handleMultipartWebUpload(request, bucket) {
         }
 
         const storedFileName = key.split('/').pop() || fileName;
-        const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
+        const safeContentType = resolveSafeUploadContentType(storedFileName, contentType);
+        const fileTypeInfo = getFileTypeInfo(storedFileName, safeContentType);
 
         await bucket.put(key, fileBuffer, {
-            httpMetadata: {
-                contentType,
-                cacheControl: FILE_CACHE_CONTROL
-            }
+            httpMetadata: buildUploadHttpMetadata(storedFileName, contentType)
         });
 
         const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
@@ -135,11 +134,12 @@ async function handleMultipartWebUpload(request, bucket) {
 
     } catch (error) {
         console.error('Multipart upload failed:', error);
+        const isInvalidPath = error.message === 'Invalid path';
         return new Response(JSON.stringify({
             success: false,
-            message: "File upload failed, please try again."
+            message: isInvalidPath ? 'Invalid path' : "File upload failed, please try again."
         }), {
-            status: 500,
+            status: isInvalidPath ? 400 : 500,
             headers: { 'Content-Type': 'application/json' }
         });
     }
@@ -156,10 +156,7 @@ export async function handleCreateR2MultipartUpload(request, bucket) {
         });
 
         const multipartUpload = await bucket.createMultipartUpload(uploadTarget.key, {
-            httpMetadata: {
-                contentType: uploadTarget.contentType,
-                cacheControl: FILE_CACHE_CONTROL
-            }
+            httpMetadata: buildUploadHttpMetadata(uploadTarget.fileName, uploadTarget.contentType)
         });
 
         return new Response(JSON.stringify({
@@ -174,11 +171,12 @@ export async function handleCreateR2MultipartUpload(request, bucket) {
         });
     } catch (error) {
         console.error('Create multipart upload failed:', error);
+        const isInvalidPath = error.message === 'Invalid path';
         return new Response(JSON.stringify({
             success: false,
-            message: 'Failed to create multipart upload'
+            message: isInvalidPath ? 'Invalid path' : 'Failed to create multipart upload'
         }), {
-            status: 500,
+            status: isInvalidPath ? 400 : 500,
             headers: { 'Content-Type': 'application/json' }
         });
     }
@@ -247,7 +245,7 @@ export async function handleCompleteR2MultipartUpload(request, bucket) {
         );
 
         const storedFileName = key.split('/').pop() || key;
-        const contentType = resolveUploadContentType(storedFileName, body.contentType || completedObject.httpMetadata?.contentType || '');
+        const contentType = resolveSafeUploadContentType(storedFileName, body.contentType || completedObject.httpMetadata?.contentType || '');
         const fileTypeInfo = getFileTypeInfo(storedFileName, contentType);
         const fileUrl = buildObjectUrl(R2_PUBLIC_BASE_URL, key);
 
@@ -369,7 +367,29 @@ export async function handleDeleteFiles(request, bucket) {
                     });
                 }
 
-                const prefix = normalizedItem.path.endsWith('/') ? normalizedItem.path : `${normalizedItem.path}/`;
+                let prefix = '';
+                try {
+                    prefix = normalizeR2Prefix(normalizedItem.path);
+                } catch {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: "Invalid directory path"
+                    }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (!prefix) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: "Invalid directory path"
+                    }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
                 let cursor = undefined;
                 while (true) {
                     const listResult = await bucket.list({
@@ -434,7 +454,7 @@ export async function handleDeleteFiles(request, bucket) {
 export async function handleCreateFolder(request, bucket) {
     try {
         const body = await request.json();
-        let folderPath = body.path;
+        let folderPath = normalizeR2Prefix(body.path);
 
         if (!folderPath) {
             return new Response(JSON.stringify({
@@ -445,12 +465,6 @@ export async function handleCreateFolder(request, bucket) {
                 headers: { 'Content-Type': 'application/json' }
             });
         }
-
-        // 确保文件夹路径以斜杠结尾
-        if (!folderPath.endsWith('/')) {
-            folderPath += '/';
-        }
-
         // R2/S3 没有真正的目录；写入以 / 结尾的零字节对象作为空目录标记。
         await bucket.put(folderPath, new Uint8Array(0), {
             httpMetadata: {
@@ -467,11 +481,12 @@ export async function handleCreateFolder(request, bucket) {
         });
     } catch (error) {
         console.error('Create folder error:', error);
+        const isInvalidPath = error.message === 'Invalid path';
         return new Response(JSON.stringify({
             success: false,
-            message: 'Failed to create folder'
+            message: isInvalidPath ? 'Invalid path' : 'Failed to create folder'
         }), {
-            status: 500,
+            status: isInvalidPath ? 400 : 500,
             headers: { 'Content-Type': 'application/json' }
         });
     }
@@ -493,15 +508,17 @@ export async function handleCreateShare(request, env) {
             return new Response(JSON.stringify({ success: false, message: 'Path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
 
+        const normalizedPath = normalizeR2Prefix(path);
         const shareId = generateRandomString(16);
-        await env.SHARES_KV.put(shareId, JSON.stringify({ path }));
+        await env.SHARES_KV.put(shareKvKey(shareId), JSON.stringify({ path: normalizedPath }));
 
         const shareUrl = `${new URL(request.url).origin}/s/${shareId}`;
 
-        return new Response(JSON.stringify({ success: true, shareId, path, url: shareUrl }), { headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ success: true, shareId, path: normalizedPath, url: shareUrl }), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
         console.error('Create share error:', error);
-        return new Response(JSON.stringify({ success: false, message: 'Failed to create share link' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        const isInvalidPath = error.message === 'Invalid path';
+        return new Response(JSON.stringify({ success: false, message: isInvalidPath ? 'Invalid path' : 'Failed to create share link' }), { status: isInvalidPath ? 400 : 500, headers: { 'Content-Type': 'application/json' } });
     }
 }
 
@@ -518,13 +535,21 @@ export async function handleListShares(request, env) {
 
         for (const key of listResult.keys) {
             try {
+                const shareId = key.name.startsWith(SHARE_KV_PREFIX)
+                    ? key.name.slice(SHARE_KV_PREFIX.length)
+                    : key.name;
+
+                if (!isValidShareId(shareId)) {
+                    continue;
+                }
+
                 const value = await env.SHARES_KV.get(key.name, 'json');
                 // 确保 value 不是 null 并且有 path 属性
                 if (value && typeof value.path !== 'undefined') {
                     shares.push({
-                        shareId: key.name,
+                        shareId,
                         path: value.path,
-                        url: `${new URL(request.url).origin}/s/${key.name}`
+                        url: `${new URL(request.url).origin}/s/${shareId}`
                     });
                 } else {
                     console.log(`Skipping malformed or null share key: ${key.name}`);
@@ -551,9 +576,10 @@ export async function handleListShares(request, env) {
 export async function handleDeleteShare(request, env) {
     try {
         const { shareId } = await request.json();
-        if (!shareId) {
+        if (!isValidShareId(shareId)) {
             return new Response(JSON.stringify({ success: false, message: 'shareId is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
+        await env.SHARES_KV.delete(shareKvKey(shareId));
         await env.SHARES_KV.delete(shareId);
         return new Response(JSON.stringify({ success: true, message: 'Share link deleted' }), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
@@ -572,20 +598,23 @@ export async function handleDeleteShare(request, env) {
 export async function handleListSharedFiles(request, env, params) {
     try {
         const { shareId } = params;
-        const shareData = await env.SHARES_KV.get(shareId, 'json');
+        const shareData = await env.SHARES_KV.get(shareKvKey(shareId), 'json')
+            || await env.SHARES_KV.get(shareId, 'json');
 
         if (!shareData) {
             return new Response(JSON.stringify({ success: false, message: 'Share link not found or expired' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
 
         const url = new URL(request.url);
-        const requestPrefix = url.searchParams.get('prefix') || '';
-        const fullPrefix = shareData.path + requestPrefix;
+        const sharePrefix = normalizeR2Prefix(shareData.path || '');
+        const requestPrefix = normalizeR2Prefix(url.searchParams.get('prefix') || '');
+        const fullPrefix = `${sharePrefix}${requestPrefix}`;
 
         return listR2Files(request, env.BUCKET_R2, fullPrefix);
     } catch (error) {
         console.error('List shared files error:', error);
-        return new Response(JSON.stringify({ success: false, message: 'Failed to list files' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        const isInvalidPath = error.message === 'Invalid path';
+        return new Response(JSON.stringify({ success: false, message: isInvalidPath ? 'Invalid path' : 'Failed to list files' }), { status: isInvalidPath ? 400 : 500, headers: { 'Content-Type': 'application/json' } });
     }
 }
 
@@ -607,10 +636,14 @@ export async function handleFileAction(request, bucket) {
             return new Response(JSON.stringify({ success: false, message: "Invalid destination" }), { status: 400 });
         }
 
+        let destinationParentPrefix = '';
+        try {
+            destinationParentPrefix = normalizeR2Prefix(destinationPrefix);
+        } catch {
+            return new Response(JSON.stringify({ success: false, message: "Invalid destination" }), { status: 400 });
+        }
+
         const ACTION_CONCURRENCY = 8;
-        const destinationParentPrefix = destinationPrefix === '/'
-            ? ''
-            : (destinationPrefix.endsWith('/') ? destinationPrefix : `${destinationPrefix}/`);
         const sourceItems = Array.isArray(body.sourceItems)
             ? body.sourceItems
             : [
@@ -625,8 +658,11 @@ export async function handleFileAction(request, bucket) {
         }
 
         function normalizeDirectoryPath(path) {
-            if (typeof path !== 'string' || !path || path === '/') return '';
-            return path.endsWith('/') ? path : `${path}/`;
+            try {
+                return normalizeR2Prefix(path);
+            } catch {
+                return '';
+            }
         }
 
         function getDirectoryName(path) {

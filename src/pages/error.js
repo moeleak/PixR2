@@ -1,3 +1,5 @@
+import { buildHtmlHeaders } from '../security.js';
+
 export function serveErrorPage(missingEnvVars) {
     const missingVarsHtml = missingEnvVars.map(key => `<li class="list-group-item font-monospace">${key}</li>`).join('');
     const errorMessage = `
@@ -7,7 +9,7 @@ export function serveErrorPage(missingEnvVars) {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>PixR2 - 配置错误</title>
-            <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
+            <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
             <style>
                 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background-color: #f8f9fa; }
                 .container { max-width: 600px; }
@@ -39,7 +41,7 @@ export function serveErrorPage(missingEnvVars) {
         </html>
     `;
     return new Response(errorMessage, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        headers: buildHtmlHeaders({ 'Content-Type': 'text/html; charset=utf-8' }),
         status: 500
     });
 }

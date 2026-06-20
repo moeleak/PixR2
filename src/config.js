@@ -1,6 +1,6 @@
 export const R2_PUBLIC_BASE_URL = 'https://box.leak.moe';
 export const FILE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
-export const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg']);
+export const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp']);
 export const MIME_EXTENSION_MAP = {
     'application/pdf': 'pdf',
     'application/zip': 'zip',

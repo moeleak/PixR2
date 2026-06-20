@@ -1,5 +1,28 @@
 import { FILE_CACHE_CONTROL, IMAGE_EXTENSIONS, MIME_EXTENSION_MAP, R2_PUBLIC_BASE_URL } from '../config.js';
 
+const FORCED_DOWNLOAD_EXTENSIONS = new Set([
+    'html',
+    'htm',
+    'xhtml',
+    'svg',
+    'js',
+    'mjs',
+    'css',
+    'xml'
+]);
+
+const FORCED_DOWNLOAD_MIME_TYPES = new Set([
+    'text/html',
+    'application/xhtml+xml',
+    'image/svg+xml',
+    'text/javascript',
+    'application/javascript',
+    'application/ecmascript',
+    'text/css',
+    'application/xml',
+    'text/xml'
+]);
+
 export function buildObjectUrl(baseUrl, key) {
     return `${baseUrl.replace(/\/$/, '')}/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
@@ -76,6 +99,29 @@ function sanitizeFileName(fileName = 'file') {
         .replace(/\s+/g, ' ')
         .trim();
     return cleanName || 'file';
+}
+
+export function normalizeR2Prefix(path = '') {
+    if (typeof path !== 'string') {
+        throw new Error('Invalid path');
+    }
+
+    const trimmedPath = path.trim().replace(/\\/g, '/');
+    if (!trimmedPath || trimmedPath === '/') return '';
+    if (trimmedPath.length > 1024 || /[\u0000-\u001f\u007f]/.test(trimmedPath)) {
+        throw new Error('Invalid path');
+    }
+
+    const parts = trimmedPath
+        .replace(/^\/+/, '')
+        .split('/')
+        .filter(Boolean);
+
+    if (parts.some(part => part === '.' || part === '..')) {
+        throw new Error('Invalid path');
+    }
+
+    return parts.length > 0 ? `${parts.join('/')}/` : '';
 }
 
 function getExtensionFromMime(mime = '') {
@@ -155,7 +201,7 @@ export function getFileTypeInfo(fileName = '', mime = '') {
     if (['ppt', 'pptx', 'key'].includes(extension)) {
         return { isImage: false, category: 'presentation', iconClass: 'bi-file-earmark-slides', label: '演示文稿' };
     }
-    if (['js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'md', 'py', 'go', 'rs', 'java', 'php', 'rb', 'sh'].includes(extension)) {
+    if (['js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'svg', 'md', 'py', 'go', 'rs', 'java', 'php', 'rb', 'sh'].includes(extension)) {
         return { isImage: false, category: 'code', iconClass: 'bi-file-earmark-code', label: '代码' };
     }
     if (normalizedMime.startsWith('text/') || ['txt', 'log'].includes(extension)) {
@@ -206,16 +252,50 @@ export function resolveUploadContentType(fileName = '', contentType = '') {
         : normalizedContentType;
 }
 
+export function resolveSafeUploadContentType(fileName = '', contentType = '') {
+    const resolvedContentType = resolveUploadContentType(fileName, contentType);
+    return shouldForceDownloadFile(fileName, resolvedContentType)
+        ? 'application/octet-stream'
+        : resolvedContentType;
+}
+
+export function buildUploadHttpMetadata(fileName = '', contentType = '') {
+    const resolvedContentType = resolveUploadContentType(fileName, contentType);
+    const safeContentType = shouldForceDownloadFile(fileName, resolvedContentType)
+        ? 'application/octet-stream'
+        : resolvedContentType;
+    const metadata = {
+        contentType: safeContentType,
+        cacheControl: FILE_CACHE_CONTROL
+    };
+
+    if (safeContentType !== resolvedContentType) {
+        metadata.contentDisposition = `attachment; filename="${sanitizeContentDispositionFileName(fileName)}"`;
+    }
+
+    return metadata;
+}
+
+function shouldForceDownloadFile(fileName = '', contentType = '') {
+    const extension = getFileExtension(fileName);
+    const normalizedContentType = contentType.toLowerCase().split(';')[0].trim();
+    return FORCED_DOWNLOAD_EXTENSIONS.has(extension) || FORCED_DOWNLOAD_MIME_TYPES.has(normalizedContentType);
+}
+
+function sanitizeContentDispositionFileName(fileName = 'download') {
+    return sanitizeFileName(fileName || 'download').replace(/["\\\r\n]/g, '_');
+}
+
 export async function buildUploadTarget(bucket, { fileName: originalName = '', path = '', contentType = '', useRandomName = false }) {
     if (!originalName) throw new Error('No file provided');
 
     const resolvedContentType = resolveUploadContentType(originalName, contentType);
     const storedName = buildStoredFileName(originalName, null, resolvedContentType, useRandomName);
     let key = storedName;
+    const normalizedPath = normalizeR2Prefix(path);
 
-    if (path) {
-        const formattedPath = path.endsWith('/') ? path : `${path}/`;
-        key = `${formattedPath}${key}`;
+    if (normalizedPath) {
+        key = `${normalizedPath}${key}`;
     }
 
     if (!useRandomName) {
@@ -223,11 +303,12 @@ export async function buildUploadTarget(bucket, { fileName: originalName = '', p
     }
 
     const finalFileName = key.split('/').pop() || storedName;
+    const safeContentType = resolveSafeUploadContentType(finalFileName, resolvedContentType);
     return {
         key,
-        contentType: resolvedContentType,
+        contentType: safeContentType,
         fileName: finalFileName,
-        fileTypeInfo: getFileTypeInfo(finalFileName, resolvedContentType)
+        fileTypeInfo: getFileTypeInfo(finalFileName, safeContentType)
     };
 }
 
@@ -271,21 +352,18 @@ export async function uploadFileToR2(fileUrl, bucket, isDocument = false, userPa
         const detectedType = detectImageType(uint8Array);
         const contentType = detectedType?.mime || mimeType || response.headers.get('Content-Type') || 'application/octet-stream';
         const fileName = buildStoredFileName(originalName || getFileNameFromUrl(fileUrl), detectedType, contentType);
-        const fileTypeInfo = getFileTypeInfo(fileName, contentType);
+        const safeContentType = resolveSafeUploadContentType(fileName, contentType);
+        const fileTypeInfo = getFileTypeInfo(fileName, safeContentType);
 
         // 如果提供了用户路径，则构建完整的文件键
         let key = fileName;
-        if (userPath) {
-            // 确保路径格式正确（以斜杠结尾）
-            const formattedPath = userPath.endsWith('/') ? userPath : `${userPath}/`;
-            key = `${formattedPath}${key}`;
+        const normalizedPath = normalizeR2Prefix(userPath);
+        if (normalizedPath) {
+            key = `${normalizedPath}${key}`;
         }
 
         await bucket.put(key, buffer, {
-            httpMetadata: {
-                contentType,
-                cacheControl: FILE_CACHE_CONTROL
-            },
+            httpMetadata: buildUploadHttpMetadata(fileName, contentType),
         });
 
         return { ok: true, key, fileName, isImage: fileTypeInfo.isImage };
@@ -308,9 +386,17 @@ export function generateRandomString(length) {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
     const charactersLength = characters.length;
-    for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    const maxByte = Math.floor(256 / charactersLength) * charactersLength;
+
+    while (result.length < length) {
+        const randomBytes = crypto.getRandomValues(new Uint8Array(length));
+        for (const byte of randomBytes) {
+            if (byte >= maxByte) continue;
+            result += characters.charAt(byte % charactersLength);
+            if (result.length === length) break;
+        }
     }
+
     return result;
 }
 
@@ -324,11 +410,11 @@ export function generateRandomString(length) {
 export async function listR2Files(request, bucket, forcePrefix = null) {
     try {
         const url = new URL(request.url);
-        const prefix = forcePrefix !== null ? forcePrefix : (url.searchParams.get('prefix') || '');
+        const prefix = normalizeR2Prefix(forcePrefix !== null ? forcePrefix : (url.searchParams.get('prefix') || ''));
         const delimiter = '/';
 
-        const page = parseInt(url.searchParams.get('page') || '1', 10);
-        const pageSize = parseInt(url.searchParams.get('pageSize') || '50', 10);
+        const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+        const pageSize = Math.min(200, Math.max(1, parseInt(url.searchParams.get('pageSize') || '50', 10) || 50));
 
         const listResult = await bucket.list({
             prefix: prefix,
@@ -391,6 +477,7 @@ export async function listR2Files(request, bucket, forcePrefix = null) {
 
     } catch (error) {
         console.error('List files error:', error);
-        return new Response(JSON.stringify({ success: false, message: 'Failed to list files' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        const isInvalidPath = error.message === 'Invalid path';
+        return new Response(JSON.stringify({ success: false, message: isInvalidPath ? 'Invalid path' : 'Failed to list files' }), { status: isInvalidPath ? 400 : 500, headers: { 'Content-Type': 'application/json' } });
     }
 }

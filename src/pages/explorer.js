@@ -1,3 +1,5 @@
+import { buildHtmlHeaders } from '../security.js';
+
 /**
  * 提供文件管理页面的HTML
  * @returns {Response} - 包含文件管理页面HTML的响应
@@ -10,8 +12,8 @@ export function serveExplorerPage() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PixR2 - 文件管理</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css">
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css" integrity="sha384-CK2SzKma4jA5H/MXDUU7i1TqZlCFaD4T01vtyDFvPlD97JQyS+IsSh1nI2EFbpyk" crossorigin="anonymous">
     <link rel="stylesheet" href="/assets/styles/explorer.css">
     <script>
         // SVG 原始代码
@@ -253,7 +255,7 @@ export function serveExplorerPage() {
         <img class="preview-content" id="previewImage">
     </div>
 
-    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/js/bootstrap.bundle.min.js" integrity="sha384-ndDqU0Gzau9qJ1lfW4pNLlhNTkCfHzAVBReH9diLvGRem5+R9g2FzA8ZGN954O5Q" crossorigin="anonymous"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             let currentPath = '';
@@ -1780,13 +1782,28 @@ export function serveExplorerPage() {
                     } else {
                         result.shares.forEach(share => {
                             const tr = document.createElement('tr');
-                            tr.innerHTML = \`
-                                <td><span class="font-monospace">\${share.path || '/'}</span></td>
-                                <td><a href="\${share.url}" target="_blank">\${share.url}</a></td>
-                                <td>
-                                    <button class="btn btn-sm btn-danger revoke-share-btn" data-share-id="\${share.shareId}">撤销</button>
-                                </td>
-                            \`;
+                            const pathCell = document.createElement('td');
+                            const pathText = document.createElement('span');
+                            pathText.className = 'font-monospace';
+                            pathText.textContent = share.path || '/';
+                            pathCell.appendChild(pathText);
+
+                            const urlCell = document.createElement('td');
+                            const link = document.createElement('a');
+                            link.href = share.url;
+                            link.target = '_blank';
+                            link.rel = 'noopener noreferrer';
+                            link.textContent = share.url;
+                            urlCell.appendChild(link);
+
+                            const actionCell = document.createElement('td');
+                            const revokeButton = document.createElement('button');
+                            revokeButton.className = 'btn btn-sm btn-danger revoke-share-btn';
+                            revokeButton.dataset.shareId = share.shareId;
+                            revokeButton.textContent = '撤销';
+                            actionCell.appendChild(revokeButton);
+
+                            tr.append(pathCell, urlCell, actionCell);
                             sharesListEl.appendChild(tr);
                         });
                     }
@@ -2155,6 +2172,6 @@ export function serveExplorerPage() {
     `;
 
     return new Response(html, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        headers: buildHtmlHeaders({ 'Content-Type': 'text/html; charset=utf-8' })
     });
 }

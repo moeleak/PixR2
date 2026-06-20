@@ -1,3 +1,5 @@
+import { buildHtmlHeaders } from '../security.js';
+
 /**
  * 提供登录页面的HTML
  * @param {string|null} errorMessage - 如果有错误，则显示此消息
@@ -11,7 +13,7 @@ export function serveLoginPage(errorMessage = null) {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>PixR2 - 登录</title>
-        <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.7/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
         <link rel="stylesheet" href="/assets/styles/login.css">
         <script>
             // SVG 原始代码
@@ -50,6 +52,6 @@ export function serveLoginPage(errorMessage = null) {
     `;
 
     return new Response(html, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        headers: buildHtmlHeaders({ 'Content-Type': 'text/html; charset=utf-8' })
     });
 }
