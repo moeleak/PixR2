@@ -64,12 +64,21 @@ export async function handleTelegramWebhook(request, env) {
         // 获取用户当前上传路径的函数
         async function getUserPath(chatId) {
             const legacyKey = chatId.toString();
-            const path = await env.INDEXES_KV.get(telegramPathKey(chatId))
-                || await env.INDEXES_KV.get(legacyKey);
-            if (path === '/') {
-                return ''; // 根路径返回空字符串
+            const currentKey = telegramPathKey(chatId);
+            const path = await env.INDEXES_KV.get(currentKey);
+            if (path !== null) {
+                return normalizeTelegramPath(path);
             }
-            return path || ''; // 默认为空字符串 (根路径)
+
+            const legacyPath = await env.INDEXES_KV.get(legacyKey);
+            if (legacyPath === null) {
+                return ''; // 默认为空字符串 (根路径)
+            }
+
+            const normalizedPath = normalizeTelegramPath(legacyPath);
+            await env.INDEXES_KV.put(currentKey, normalizedPath);
+            await env.INDEXES_KV.delete(legacyKey);
+            return normalizedPath;
         }
 
         // 设置用户上传路径的函数
@@ -160,6 +169,10 @@ export async function handleTelegramWebhook(request, env) {
         console.error(err);
         return new Response('Error processing request', { status: 500 });
     }
+}
+
+function normalizeTelegramPath(path = '') {
+    return path === '/' ? '' : normalizeR2Prefix(path);
 }
 
 /**

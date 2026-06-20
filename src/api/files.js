@@ -531,7 +531,7 @@ export async function handleCreateShare(request, env) {
 export async function handleListShares(request, env) {
     try {
         const listResult = await env.SHARES_KV.list();
-        const shares = [];
+        const sharesById = new Map();
 
         for (const key of listResult.keys) {
             try {
@@ -546,9 +546,26 @@ export async function handleListShares(request, env) {
                 const value = await env.SHARES_KV.get(key.name, 'json');
                 // 确保 value 不是 null 并且有 path 属性
                 if (value && typeof value.path !== 'undefined') {
-                    shares.push({
+                    const normalizedPath = normalizeR2Prefix(value.path || '');
+                    if (!key.name.startsWith(SHARE_KV_PREFIX)) {
+                        const existingValue = await env.SHARES_KV.get(shareKvKey(shareId), 'json');
+                        if (existingValue && typeof existingValue.path !== 'undefined') {
+                            await env.SHARES_KV.delete(key.name);
+                            sharesById.set(shareId, {
+                                shareId,
+                                path: normalizeR2Prefix(existingValue.path || ''),
+                                url: `${new URL(request.url).origin}/s/${shareId}`
+                            });
+                            continue;
+                        }
+
+                        await env.SHARES_KV.put(shareKvKey(shareId), JSON.stringify({ path: normalizedPath }));
+                        await env.SHARES_KV.delete(key.name);
+                    }
+
+                    sharesById.set(shareId, {
                         shareId,
-                        path: value.path,
+                        path: normalizedPath,
                         url: `${new URL(request.url).origin}/s/${shareId}`
                     });
                 } else {
@@ -560,6 +577,7 @@ export async function handleListShares(request, env) {
         }
 
         // 注意: 这个实现没有处理分页 (cursor). 如果分享链接超过1000个, 需要添加分页逻辑.
+        const shares = Array.from(sharesById.values());
         return new Response(JSON.stringify({ success: true, shares }), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
         console.error('List shares error:', error);
@@ -598,8 +616,7 @@ export async function handleDeleteShare(request, env) {
 export async function handleListSharedFiles(request, env, params) {
     try {
         const { shareId } = params;
-        const shareData = await env.SHARES_KV.get(shareKvKey(shareId), 'json')
-            || await env.SHARES_KV.get(shareId, 'json');
+        const shareData = await getShareData(env, shareId);
 
         if (!shareData) {
             return new Response(JSON.stringify({ success: false, message: 'Share link not found or expired' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
@@ -616,6 +633,23 @@ export async function handleListSharedFiles(request, env, params) {
         const isInvalidPath = error.message === 'Invalid path';
         return new Response(JSON.stringify({ success: false, message: isInvalidPath ? 'Invalid path' : 'Failed to list files' }), { status: isInvalidPath ? 400 : 500, headers: { 'Content-Type': 'application/json' } });
     }
+}
+
+async function getShareData(env, shareId) {
+    const namespacedKey = shareKvKey(shareId);
+    const shareData = await env.SHARES_KV.get(namespacedKey, 'json');
+    if (shareData) return shareData;
+
+    const legacyShareData = await env.SHARES_KV.get(shareId, 'json');
+    if (!legacyShareData || typeof legacyShareData.path === 'undefined') {
+        return legacyShareData;
+    }
+
+    const normalizedPath = normalizeR2Prefix(legacyShareData.path || '');
+    const migratedShareData = { path: normalizedPath };
+    await env.SHARES_KV.put(namespacedKey, JSON.stringify(migratedShareData));
+    await env.SHARES_KV.delete(shareId);
+    return migratedShareData;
 }
 
 /**

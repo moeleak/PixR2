@@ -23,10 +23,11 @@ import { serveLoginPage } from './pages/login.js';
 import { serveSharePage } from './pages/share.js';
 import { serveStylesheet } from './pages/styles/index.js';
 import { isValidShareId } from './storage-keys.js';
+import { scheduleAutomaticSecurityMigration } from './migrations.js';
 
 // Cloudflare Workers 的主入口点
 export default {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         // --- HTTP to HTTPS Redirection ---
         const redirectUrl = new URL(request.url);
         if (redirectUrl.protocol === 'http:') {
@@ -55,6 +56,8 @@ export default {
         if (missingEnvVars.length > 0) {
             return serveErrorPage(missingEnvVars);
         }
+
+        await scheduleAutomaticSecurityMigration(request, env, ctx);
 
         // --- 路由器设置 ---
         const router = new Router();

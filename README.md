@@ -75,12 +75,14 @@ PixR2 是一个 **无服务器部署（Serverless）** 的在线文件托管工�
 - 登录 Web 面板后访问 `https://<你的自定义域>/setWebhook` 激活 Telegram Webhook
 - 现在就可以通过 Telegram Bot 和 Web 面板开始使用了  
 - 在 Telegram 里发送任意消息即可获得 Bot 指令帮助  
+- 升级已有部署后，登录 Web 面板会自动后台迁移旧 KV key，并小批量修复历史 `.html`、`.svg`、`.js`、`.css`、`.xml` 等对象的 R2 下载 metadata
 
 ### 3. 项目结构
 - [_worker.js](_worker.js)：兼容入口，转发到模块化 Worker 入口
 - [src/index.js](src/index.js)：Worker 主入口与路由注册
 - [src/api/files.js](src/api/files.js)：文件上传、分片上传、目录、分享和文件操作 API
 - [src/api/telegram.js](src/api/telegram.js)：Telegram Bot Webhook 与消息处理
+- [src/migrations.js](src/migrations.js)：升级后的自动安全迁移
 - [src/pages/explorer.js](src/pages/explorer.js)：文件管理页面
 - [src/pages](src/pages)：登录和分享页面
 - [src/utils/files.js](src/utils/files.js)：文件名、类型、R2 列表和直链工具函数
