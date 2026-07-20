@@ -13,6 +13,7 @@ import {
     handleListFiles,
     handleListSharedFiles,
     handleListShares,
+    handleRenameItem,
     handleUploadR2MultipartPart,
     handleWebUpload,
 } from './api/files.js';
@@ -106,6 +107,7 @@ export default {
         router.post('/api/share/delete', requireAuth(handleDeleteShare));
         // 文件操作（移动/复制）和目录列表路由
         router.post('/api/files/action', requireAuth((req, env) => handleFileAction(req, env.BUCKET_R2)));
+        router.post('/api/files/rename', requireAuth(handleRenameItem));
         router.get('/api/directories', requireAuth((req, env) => handleListDirectories(req, env.BUCKET_R2)));
 
         // 如果启用了Telegram Bot，则注册相关路由

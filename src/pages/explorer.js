@@ -68,6 +68,7 @@ export function serveExplorerPage() {
                         <i class="bi bi-pencil-square me-1"></i>操作
                     </button>
                     <ul class="dropdown-menu">
+                        <li><button id="renameBtn" class="dropdown-item" type="button" disabled>重命名</button></li>
                         <li><button id="moveBtn" class="dropdown-item" type="button">移动到...</button></li>
                         <li><button id="copyBtn" class="dropdown-item" type="button">复制到...</button></li>
                     </ul>
@@ -120,6 +121,27 @@ export function serveExplorerPage() {
                     <button type="button" id="createFolderBtn" class="btn btn-primary">创建</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="renameModal" tabindex="-1" aria-labelledby="renameModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <form class="modal-content" id="renameForm" novalidate>
+                <div class="modal-header">
+                    <h5 class="modal-title" id="renameModalLabel">重命名</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label for="renameInput" class="form-label" id="renameInputLabel">新名称</label>
+                    <input type="text" id="renameInput" class="form-control" autocomplete="off" required>
+                    <div class="invalid-feedback">请输入新名称</div>
+                    <div class="form-text" id="renameHelp">文件扩展名可以直接修改，但不会转换文件内容。</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" id="confirmRenameBtn" class="btn btn-primary">保存</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -231,6 +253,11 @@ export function serveExplorerPage() {
     </div>
 
     <div id="itemContextMenu" class="item-context-menu" role="menu" aria-hidden="true">
+        <button id="contextRenameBtn" class="dropdown-item" type="button" role="menuitem">
+            <i class="bi bi-pencil"></i>
+            <span>重命名</span>
+        </button>
+        <div class="dropdown-divider"></div>
         <button id="contextDeleteBtn" class="dropdown-item text-danger" type="button" role="menuitem">
             <i class="bi bi-trash"></i>
             <span>删除</span>
@@ -312,8 +339,16 @@ export function serveExplorerPage() {
             const directoryTreeEl = document.getElementById('directoryTree');
             const confirmMoveCopyBtn = document.getElementById('confirmMoveCopyBtn');
             const createFolderInModalBtn = document.getElementById('createFolderInModalBtn');
+            const renameBtn = document.getElementById('renameBtn');
+            const renameModalEl = document.getElementById('renameModal');
+            const renameForm = document.getElementById('renameForm');
+            const renameInput = document.getElementById('renameInput');
+            const renameInputLabel = document.getElementById('renameInputLabel');
+            const renameHelp = document.getElementById('renameHelp');
+            const confirmRenameBtn = document.getElementById('confirmRenameBtn');
 
             const folderModal = new bootstrap.Modal(document.getElementById('folderModal'));
+            const renameModal = new bootstrap.Modal(renameModalEl, { backdrop: 'static', keyboard: false });
             const notificationToast = new bootstrap.Toast(document.getElementById('notification'));
             const shareCreatedModal = new bootstrap.Modal(document.getElementById('shareCreatedModal'));
             const manageSharesModal = new bootstrap.Modal(document.getElementById('manageSharesModal'));
@@ -332,6 +367,7 @@ export function serveExplorerPage() {
             const pageDropOverlay = document.getElementById('pageDropOverlay');
             const pageDropPath = document.getElementById('pageDropPath');
             const itemContextMenu = document.getElementById('itemContextMenu');
+            const contextRenameBtn = document.getElementById('contextRenameBtn');
             const contextDeleteBtn = document.getElementById('contextDeleteBtn');
 
             let currentAction = ''; // 'move' or 'copy'
@@ -344,6 +380,8 @@ export function serveExplorerPage() {
             let directoryChildrenByParent = new Map();
             let isMoveCopyBusy = false;
             let contextTargetItem = null;
+            let renameSourceItem = null;
+            let isRenameBusy = false;
             const MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
             const MULTIPART_CONCURRENCY = 4;
             const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -355,8 +393,12 @@ export function serveExplorerPage() {
 	                if (useGlobalLoading) showLoading(true);
 	                try {
 	                    const response = await fetch(endpoint, options);
-	                    if (!response.ok) throw new Error('网络响应失败');
-                    return await response.json();
+                        const data = await response.json().catch(() => null);
+                        if (!response.ok) {
+                            showNotification(data?.message || '网络响应失败', 'danger');
+                            return { ...(data || {}), success: false };
+                        }
+                        return data || { success: false, message: '响应内容无效' };
                 } catch (error) {
 	                    showNotification('操作失败: ' + error.message, 'danger');
 	                    return { success: false, error };
@@ -670,6 +712,84 @@ export function serveExplorerPage() {
                 }
                 return { type: 'file', key: itemEl.dataset.key };
             }
+
+            function getSelectionName(selection) {
+                if (!selection) return '';
+                const identifier = selection.type === 'directory' ? selection.path : selection.key;
+                return String(identifier || '').replace(/\\/$/, '').split('/').pop() || '';
+            }
+
+            function isRenameableSelection(selection) {
+                const name = getSelectionName(selection);
+                return Boolean(name && name !== '.null');
+            }
+
+            function openRenameDialog(selection) {
+                if (isRenameBusy || !isRenameableSelection(selection)) return;
+                renameSourceItem = { ...selection };
+                renameInput.value = getSelectionName(selection);
+                renameInput.classList.remove('is-invalid');
+                renameInputLabel.textContent = selection.type === 'directory' ? '新文件夹名称' : '新文件名';
+                renameHelp.classList.toggle('d-none', selection.type === 'directory');
+                renameModal.show();
+            }
+
+            renameModalEl.addEventListener('shown.bs.modal', () => {
+                renameInput.focus();
+                const name = renameInput.value;
+                const dotIndex = renameSourceItem?.type === 'file' ? name.lastIndexOf('.') : -1;
+                renameInput.setSelectionRange(0, dotIndex > 0 ? dotIndex : name.length);
+            });
+
+            renameModalEl.addEventListener('hidden.bs.modal', () => {
+                if (isRenameBusy) return;
+                renameSourceItem = null;
+                renameInput.value = '';
+                renameInput.classList.remove('is-invalid');
+            });
+
+            renameForm.addEventListener('submit', async event => {
+                event.preventDefault();
+                if (isRenameBusy || !renameSourceItem) return;
+
+                const newName = renameInput.value.trim();
+                if (!newName) {
+                    renameInput.classList.add('is-invalid');
+                    renameInput.focus();
+                    return;
+                }
+
+                renameInput.classList.remove('is-invalid');
+                isRenameBusy = true;
+                const originalHtml = confirmRenameBtn.innerHTML;
+                const dismissButtons = renameModalEl.querySelectorAll('[data-bs-dismiss="modal"]');
+                confirmRenameBtn.disabled = true;
+                renameInput.disabled = true;
+                dismissButtons.forEach(button => { button.disabled = true; });
+                confirmRenameBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>保存中...';
+
+                const result = await apiCall('/api/files/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sourceItem: renameSourceItem, newName })
+                }, false);
+
+                isRenameBusy = false;
+                confirmRenameBtn.disabled = false;
+                renameInput.disabled = false;
+                dismissButtons.forEach(button => { button.disabled = false; });
+                confirmRenameBtn.innerHTML = originalHtml;
+
+                if (result.success) {
+                    renameModal.hide();
+                    showNotification(result.message || '重命名成功', 'success');
+                    clearSelection();
+                    directoryTreeCache = null;
+                    refreshGallery();
+                } else {
+                    renameInput.focus();
+                }
+            });
 
             function getSelectionId(selection) {
                 return selection.type === 'directory' ? \`directory:\${selection.path}\` : \`file:\${selection.key}\`;
@@ -1198,6 +1318,7 @@ export function serveExplorerPage() {
                 const hasSelection = selectedItems.length > 0;
                 deleteBtn.disabled = !hasSelection;
                 document.getElementById('actionsDropdown').disabled = !hasSelection;
+                renameBtn.disabled = selectedItems.length !== 1 || !isRenameableSelection(selectedItems[0]);
                 selectAllCheckbox.checked = numItems > 0 && selectedItems.length === numItems;
                 selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < numItems;
             }
@@ -1703,6 +1824,7 @@ export function serveExplorerPage() {
                 }
 
                 contextTargetItem = itemEl;
+                contextRenameBtn.disabled = selectedItems.length !== 1 || !isRenameableSelection(selectedItems[0]);
                 itemContextMenu.classList.add('show');
                 itemContextMenu.setAttribute('aria-hidden', 'false');
 
@@ -1715,6 +1837,10 @@ export function serveExplorerPage() {
 
             deleteBtn.addEventListener('click', async () => {
                 await deleteItems(selectedItems.slice());
+            });
+
+            renameBtn.addEventListener('click', () => {
+                if (selectedItems.length === 1) openRenameDialog(selectedItems[0]);
             });
 
 	            galleryEl.addEventListener('contextmenu', event => {
@@ -1732,7 +1858,15 @@ export function serveExplorerPage() {
                 showItemContextMenu(event, itemEl);
             });
 
-            contextDeleteBtn.addEventListener('click', async () => {
+	            contextRenameBtn.addEventListener('click', () => {
+	                const item = selectedItems.length === 1
+	                    ? selectedItems[0]
+	                    : (contextTargetItem ? getSelectionFromElement(contextTargetItem) : null);
+	                hideItemContextMenu();
+	                if (item) openRenameDialog(item);
+	            });
+
+	            contextDeleteBtn.addEventListener('click', async () => {
                 const items = selectedItems.length > 0
                     ? selectedItems.slice()
                     : (contextTargetItem ? [getSelectionFromElement(contextTargetItem)] : []);

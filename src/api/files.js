@@ -652,6 +652,403 @@ async function getShareData(env, shareId) {
     return migratedShareData;
 }
 
+const RENAME_CONCURRENCY = 8;
+const MAX_R2_KEY_BYTES = 1024;
+
+class RenameError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+
+function renameJsonResponse(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+function normalizeRenameName(value) {
+    if (typeof value !== 'string') {
+        throw new RenameError(400, '请输入新名称');
+    }
+
+    const name = value.trim();
+    if (
+        !name ||
+        name === '.' ||
+        name === '..' ||
+        name === '.null' ||
+        /[\/\\\u0000-\u001f\u007f]/.test(name)
+    ) {
+        throw new RenameError(400, '名称不能为空，也不能包含斜杠或控制字符');
+    }
+
+    return name;
+}
+
+function assertR2KeyLength(key) {
+    if (new TextEncoder().encode(key).length > MAX_R2_KEY_BYTES) {
+        throw new RenameError(400, '新名称过长');
+    }
+}
+
+function normalizeRenameFileKey(key) {
+    if (
+        typeof key !== 'string' ||
+        !key ||
+        key.endsWith('/') ||
+        key.startsWith('/') ||
+        /[\\\u0000-\u001f\u007f]/.test(key)
+    ) {
+        throw new RenameError(400, '无效的源文件');
+    }
+
+    const slashIndex = key.lastIndexOf('/');
+    const parentPrefix = slashIndex >= 0 ? key.substring(0, slashIndex + 1) : '';
+    const fileName = slashIndex >= 0 ? key.substring(slashIndex + 1) : key;
+
+    if (!fileName || fileName === '.null') {
+        throw new RenameError(400, '该项目不能重命名');
+    }
+
+    try {
+        if (normalizeR2Prefix(parentPrefix) !== parentPrefix) {
+            throw new Error('Invalid path');
+        }
+    } catch {
+        throw new RenameError(400, '无效的源文件');
+    }
+
+    return { key, parentPrefix, fileName };
+}
+
+function normalizeRenameDirectoryPath(path) {
+    let prefix = '';
+    try {
+        prefix = normalizeR2Prefix(path);
+    } catch {
+        throw new RenameError(400, '无效的源文件夹');
+    }
+
+    if (!prefix) {
+        throw new RenameError(400, '根目录不能重命名');
+    }
+
+    const withoutSlash = prefix.slice(0, -1);
+    const slashIndex = withoutSlash.lastIndexOf('/');
+    return {
+        prefix,
+        parentPrefix: slashIndex >= 0 ? withoutSlash.substring(0, slashIndex + 1) : '',
+        name: slashIndex >= 0 ? withoutSlash.substring(slashIndex + 1) : withoutSlash
+    };
+}
+
+async function listAllObjects(bucket, prefix) {
+    const objects = [];
+    let cursor = undefined;
+
+    while (true) {
+        const result = await bucket.list({ prefix, cursor, limit: 1000 });
+        objects.push(...(result.objects || []));
+        if (!result.truncated) break;
+        cursor = result.cursor;
+    }
+
+    return objects;
+}
+
+async function targetNameExists(bucket, baseKey) {
+    if (await bucket.head(baseKey)) return true;
+    const directoryPrefix = `${baseKey}/`;
+    const result = await bucket.list({ prefix: directoryPrefix, limit: 1 });
+    return (result.objects || []).length > 0;
+}
+
+async function runRenameTasks(tasks, worker) {
+    const results = new Array(tasks.length);
+    let nextIndex = 0;
+    const workers = Array.from(
+        { length: Math.min(RENAME_CONCURRENCY, Math.max(tasks.length, 1)) },
+        async () => {
+            while (nextIndex < tasks.length) {
+                const index = nextIndex++;
+                try {
+                    await worker(tasks[index]);
+                    results[index] = { success: true };
+                } catch (error) {
+                    results[index] = { success: false, error };
+                }
+            }
+        }
+    );
+    await Promise.all(workers);
+    return results;
+}
+
+function buildRenamedHttpMetadata(currentMetadata, newName) {
+    const existing = { ...(currentMetadata || {}) };
+    const safeMetadata = buildUploadHttpMetadata(newName, existing.contentType || '');
+    const nextMetadata = { ...existing, ...safeMetadata };
+    if (!safeMetadata.contentDisposition) delete nextMetadata.contentDisposition;
+    return nextMetadata;
+}
+
+async function copyRenameTask(bucket, task) {
+    const object = await bucket.get(task.source);
+    if (object === null) {
+        throw new Error(`Source not found: ${task.source}`);
+    }
+
+    task.sourceHttpMetadata = { ...(object.httpMetadata || {}) };
+    task.sourceCustomMetadata = { ...(object.customMetadata || {}) };
+    const httpMetadata = task.renameFileMetadata
+        ? buildRenamedHttpMetadata(task.sourceHttpMetadata, task.newName)
+        : task.sourceHttpMetadata;
+
+    await bucket.put(task.destination, object.body, {
+        httpMetadata,
+        customMetadata: task.sourceCustomMetadata
+    });
+}
+
+function getShareIdForKey(keyName) {
+    const shareId = keyName.startsWith(SHARE_KV_PREFIX)
+        ? keyName.slice(SHARE_KV_PREFIX.length)
+        : keyName;
+    return isValidShareId(shareId) ? shareId : '';
+}
+
+async function updateRenamedSharePaths(kv, sourcePrefix, destinationPrefix, changes) {
+    const updatedShareIds = new Set();
+    let cursor = undefined;
+
+    while (true) {
+        const result = await kv.list({ cursor, limit: 1000 });
+        for (const key of result.keys || []) {
+            const shareId = getShareIdForKey(key.name);
+            if (!shareId) continue;
+
+            const previous = await kv.get(key.name, 'json');
+            if (!previous || typeof previous.path === 'undefined') continue;
+
+            const previousPath = normalizeR2Prefix(previous.path || '');
+            if (!previousPath.startsWith(sourcePrefix)) continue;
+
+            const nextValue = {
+                ...previous,
+                path: `${destinationPrefix}${previousPath.substring(sourcePrefix.length)}`
+            };
+            await kv.put(key.name, JSON.stringify(nextValue));
+            changes.push({ key: key.name, previous });
+            updatedShareIds.add(shareId);
+        }
+
+        if (result.list_complete || !result.cursor) break;
+        cursor = result.cursor;
+    }
+
+    return updatedShareIds.size;
+}
+
+async function rollbackShareChanges(kv, changes) {
+    const errors = [];
+    for (const change of changes.slice().reverse()) {
+        try {
+            await kv.put(change.key, JSON.stringify(change.previous));
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    return errors;
+}
+
+async function deleteKeys(bucket, keys) {
+    return runRenameTasks(keys, key => bucket.delete(key));
+}
+
+async function rollbackRename(env, copiedTasks, deletedTasks, shareChanges) {
+    const rollbackErrors = [];
+
+    if (deletedTasks.length > 0) {
+        const restoreResults = await runRenameTasks(deletedTasks, async task => {
+            const object = await env.BUCKET_R2.get(task.destination);
+            if (object === null) throw new Error(`Rollback source missing: ${task.destination}`);
+            await env.BUCKET_R2.put(task.source, object.body, {
+                httpMetadata: task.sourceHttpMetadata,
+                customMetadata: task.sourceCustomMetadata
+            });
+        });
+        rollbackErrors.push(...restoreResults.filter(result => !result.success).map(result => result.error));
+    }
+
+    rollbackErrors.push(...await rollbackShareChanges(env.SHARES_KV, shareChanges));
+
+    const safeDestinationKeys = [];
+    for (const task of copiedTasks) {
+        try {
+            if (await env.BUCKET_R2.head(task.source)) safeDestinationKeys.push(task.destination);
+        } catch (error) {
+            rollbackErrors.push(error);
+        }
+    }
+    const cleanupResults = await deleteKeys(env.BUCKET_R2, safeDestinationKeys);
+    rollbackErrors.push(...cleanupResults.filter(result => !result.success).map(result => result.error));
+
+    if (rollbackErrors.length > 0) {
+        console.error('Rename rollback was incomplete:', rollbackErrors);
+    }
+}
+
+/**
+ * 重命名单个R2文件或文件夹，并保持文件夹分享链接有效。
+ * @param {Request} request
+ * @param {object} env
+ * @returns {Promise<Response>}
+ */
+export async function handleRenameItem(request, env) {
+    const copiedTasks = [];
+    const deletedTasks = [];
+    const shareChanges = [];
+
+    try {
+        let body;
+        try {
+            body = await request.json();
+        } catch {
+            throw new RenameError(400, '无效的请求内容');
+        }
+
+        const sourceItem = body?.sourceItem;
+        const newName = normalizeRenameName(body?.newName);
+        if (!sourceItem || !['file', 'directory'].includes(sourceItem.type)) {
+            throw new RenameError(400, '请选择一个要重命名的项目');
+        }
+
+        let sourceIdentifier;
+        let destinationIdentifier;
+        let destinationBaseKey;
+        let tasks;
+        let responseItem;
+        let shareSourcePrefix = '';
+        let shareDestinationPrefix = '';
+
+        if (sourceItem.type === 'file') {
+            const source = normalizeRenameFileKey(sourceItem.key);
+            sourceIdentifier = source.key;
+            destinationIdentifier = `${source.parentPrefix}${newName}`;
+            destinationBaseKey = destinationIdentifier;
+            assertR2KeyLength(destinationIdentifier);
+
+            if (!await env.BUCKET_R2.head(source.key)) {
+                throw new RenameError(404, '源文件不存在');
+            }
+            if (destinationIdentifier === source.key) {
+                return renameJsonResponse({
+                    success: true,
+                    message: '名称未变更',
+                    item: { type: 'file', key: source.key },
+                    affectedObjects: 0,
+                    updatedShares: 0,
+                    skipped: true
+                });
+            }
+
+            tasks = [{
+                source: source.key,
+                destination: destinationIdentifier,
+                renameFileMetadata: true,
+                newName
+            }];
+            responseItem = { type: 'file', key: destinationIdentifier };
+        } else {
+            const source = normalizeRenameDirectoryPath(sourceItem.path);
+            sourceIdentifier = source.prefix;
+            destinationIdentifier = `${source.parentPrefix}${newName}/`;
+            destinationBaseKey = destinationIdentifier.slice(0, -1);
+            assertR2KeyLength(destinationIdentifier);
+
+            const sourceObjects = await listAllObjects(env.BUCKET_R2, source.prefix);
+            if (sourceObjects.length === 0) {
+                throw new RenameError(404, '源文件夹不存在');
+            }
+            if (destinationIdentifier === source.prefix) {
+                return renameJsonResponse({
+                    success: true,
+                    message: '名称未变更',
+                    item: { type: 'directory', path: source.prefix },
+                    affectedObjects: 0,
+                    updatedShares: 0,
+                    skipped: true
+                });
+            }
+
+            tasks = sourceObjects.map(object => {
+                const destination = `${destinationIdentifier}${object.key.substring(source.prefix.length)}`;
+                assertR2KeyLength(destination);
+                return { source: object.key, destination };
+            });
+            responseItem = { type: 'directory', path: destinationIdentifier };
+            shareSourcePrefix = source.prefix;
+            shareDestinationPrefix = destinationIdentifier;
+        }
+
+        if (await targetNameExists(env.BUCKET_R2, destinationBaseKey)) {
+            throw new RenameError(409, '同一目录下已存在同名文件或文件夹');
+        }
+
+        const copyResults = await runRenameTasks(tasks, async task => {
+            await copyRenameTask(env.BUCKET_R2, task);
+            copiedTasks.push(task);
+        });
+        if (copyResults.some(result => !result.success)) {
+            await rollbackRename(env, copiedTasks, [], []);
+            throw new RenameError(500, '重命名失败，原项目已保留');
+        }
+
+        let updatedShares = 0;
+        if (sourceItem.type === 'directory') {
+            try {
+                updatedShares = await updateRenamedSharePaths(
+                    env.SHARES_KV,
+                    shareSourcePrefix,
+                    shareDestinationPrefix,
+                    shareChanges
+                );
+            } catch (error) {
+                await rollbackRename(env, copiedTasks, [], shareChanges);
+                throw new RenameError(500, '无法更新文件夹分享链接，重命名已取消');
+            }
+        }
+
+        const deleteResults = await runRenameTasks(tasks, async task => {
+            await env.BUCKET_R2.delete(task.source);
+            deletedTasks.push(task);
+        });
+        if (deleteResults.some(result => !result.success)) {
+            await rollbackRename(env, copiedTasks, deletedTasks, shareChanges);
+            throw new RenameError(500, '无法删除旧项目，重命名已取消');
+        }
+
+        return renameJsonResponse({
+            success: true,
+            message: sourceItem.type === 'directory' ? '文件夹重命名成功' : '文件重命名成功',
+            item: responseItem,
+            source: sourceIdentifier,
+            destination: destinationIdentifier,
+            affectedObjects: tasks.length,
+            updatedShares
+        });
+    } catch (error) {
+        if (error instanceof RenameError) {
+            return renameJsonResponse({ success: false, message: error.message }, error.status);
+        }
+        console.error('Rename item error:', error);
+        return renameJsonResponse({ success: false, message: '重命名失败，请稍后重试' }, 500);
+    }
+}
+
 /**
  * 处理文件操作，如移动或复制
  * @param {Request} request 传入的请求
